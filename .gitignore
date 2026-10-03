@@ -1,0 +1,8 @@
+﻿.aider*
+.venv/
+__pycache__/
+*.pyc
+.acl-reports/
+__pycache__.7z
+*.log
+.env

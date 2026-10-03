@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>smilegun — глазной тир</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #2ea043;
+    --red: #f85149;
+    --yellow: #d29922;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  #app {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    height: 100vh;
+  }
+  /* ---------- Sidebar ---------- */
+  #sidebar {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  #sidebar h1 {
+    font-size: 18px;
+    margin: 0 0 4px;
+    letter-spacing: 0.5px;
+  }
+  #sidebar h1 span { color: var(--accent); }
+  .preview-wrap {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #000;
+    aspect-ratio: 4 / 3;
+  }
+  #preview {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .preview-wrap.off::after {
+    content: "КАМЕРА ВЫКЛЮЧЕНА";
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 13px;
+    letter-spacing: 2px;
+    background: rgba(0,0,0,0.7);
+  }
+  .btn-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  button {
+    background: #21262d;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover:not(:disabled) {
+    background: #30363d;
+    border-color: #484f58;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.primary {
+    background: var(--green);
+    border-color: var(--green);
+    color: #fff;
+    font-weight: 600;
+    grid-column: 1 / -1;
+  }
+  button.primary:hover:not(:disabled) { background: #3fb950; }
+  button.danger {
+    background: #4d1f1f;
+    border-color: #6e2828;
+    color: #ffb3b3;
+    grid-column: 1 / -1;
+  }
+  button.danger:hover:not(:disabled) { background: #6e2828; }
+
+  .stats {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 12px;
+    font-size: 12px;
+    font-family: "Consolas", "Menlo", monospace;
+    padding: 10px 12px;
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .stats .k { color: var(--muted); }
+  .stats .v { color: var(--text); text-align: right; }
+  .stats .v.fire { color: var(--red); font-weight: 700; }
+
+  details {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0;
+    overflow: hidden;
+  }
+  details > summary {
+    padding: 10px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    background: #0d1117;
+    list-style: none;
+    user-select: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before {
+    content: "▸ ";
+    color: var(--muted);
+    display: inline-block;
+    transition: transform 0.15s;
+  }
+  details[open] > summary::before { content: "▾ "; }
+  details .body { padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+
+  .slider {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .slider .label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .slider .label b { color: var(--text); font-weight: 600; font-family: monospace; }
+  .slider input[type=range] {
+    width: 100%;
+    accent-color: var(--accent);
+  }
+  .hint {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .hint kbd {
+    background: #21262d;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: monospace;
+    font-size: 10px;
+  }
+
+  /* ---------- Game field ---------- */
+  #field-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding: 20px;
+  }
+  #field {
+    position: relative;
+    background:
+      radial-gradient(circle at 50% 50%, rgba(88,166,255,0.06), transparent 60%),
+      repeating-linear-gradient(0deg, #0a0d12 0 1px, transparent 1px 40px),
+      repeating-linear-gradient(90deg, #0a0d12 0 1px, transparent 1px 40px),
+      #05070a;
+    border: 2px solid #fff;
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.15),
+      0 0 40px rgba(88,166,255,0.15),
+      inset 0 0 60px rgba(0,0,0,0.8);
+    transform-origin: center center;
+  }
+  #crosshair {
+    position: absolute;
+    width: 34px;
+    height: 34px;
+    margin-left: -17px;
+    margin-top: -17px;
+    background: var(--green);
+    box-shadow:
+      0 0 12px rgba(46,160,67,0.9),
+      0 0 30px rgba(46,160,67,0.5);
+    border-radius: 3px;
+    pointer-events: none;
+    transition: background 0.06s, box-shadow 0.06s;
+    will-change: transform, background;
+  }
+  #crosshair.fire {
+    background: var(--red);
+    box-shadow:
+      0 0 14px rgba(248,81,73,1),
+      0 0 40px rgba(248,81,73,0.7);
+  }
+  .bullet {
+    position: absolute;
+    width: 4px;
+    height: 14px;
+    margin-left: -2px;
+    margin-top: -7px;
+    background: #ffd24a;
+    border-radius: 2px;
+    box-shadow: 0 0 10px #ffd24a, 0 0 20px rgba(255,210,74,0.6);
+    pointer-events: none;
+    will-change: transform;
+  }
+  .hit {
+    position: absolute;
+    width: 60px;
+    height: 60px;
+    margin-left: -30px;
+    margin-top: -30px;
+    border: 2px solid #ffd24a;
+    border-radius: 50%;
+    pointer-events: none;
+    animation: hit-pop 0.4s ease-out forwards;
+  }
+  @keyframes hit-pop {
+    from { transform: scale(0.3); opacity: 1; }
+    to   { transform: scale(1.6); opacity: 0; }
+  }
+  #hud {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    font-family: monospace;
+    font-size: 14px;
+    color: #fff;
+    text-shadow: 0 0 6px rgba(0,0,0,0.9);
+    pointer-events: none;
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ======================= SIDEBAR ======================= -->
+  <aside id="sidebar">
+    <h1>SMILE<span>·</span>GUN</h1>
+
+    <div class="preview-wrap off" id="preview-wrap">
+      <img id="preview" alt="camera preview">
+    </div>
+
+    <div class="btn-row">
+      <button id="btn-start" class="primary">▶ ЗАПУСТИТЬ КАМЕРУ</button>
+      <button id="btn-stop" class="danger" disabled>■ ОСТАНОВИТЬ</button>
+    </div>
+
+    <div class="stats">
+      <div class="k">FPS</div>            <div class="v" id="s-fps">—</div>
+      <div class="k">Прицел X</div>       <div class="v" id="s-ax">—</div>
+      <div class="k">Прицел Y</div>       <div class="v" id="s-ay">—</div>
+      <div class="k">Зрачок X</div>       <div class="v" id="s-ix">—</div>
+      <div class="k">Зрачок Y</div>       <div class="v" id="s-iy">—</div>
+      <div class="k">Улыбка</div>         <div class="v" id="s-smile">—</div>
+      <div class="k">Рот открыт</div>     <div class="v" id="s-mouth">—</div>
+      <div class="k">Состояние</div>      <div class="v" id="s-fire">—</div>
+      <div class="k">Выстрелов</div>      <div class="v" id="s-shots">0</div>
+    </div>
+
+    <details open>
+      <summary>Настройки управления</summary>
+      <div class="body">
+        <div class="slider">
+          <div class="label"><span>Усиление зрачков</span><b id="v-iris_gain">2.6</b></div>
+          <input type="range" id="iris_gain" min="0.5" max="8" step="0.1" value="2.6">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Вклад головы</span><b id="v-head_gain">1.5</b></div>
+          <input type="range" id="head_gain" min="0" max="4" step="0.1" value="1.5">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Сглаживание (меньше = плавнее)</span><b id="v-smoothing_alpha">0.30</b></div>
+          <input type="range" id="smoothing_alpha" min="0.05" max="1" step="0.01" value="0.30">
+        </div>
+        <div class="hint">
+          Если прицел <b>дёргается</b> — уменьши сглаживание.<br>
+          Если <b>не достаёт до краёв</b> — увеличь усиление.<br>
+          Центр поля прицел находит сам: подержи взгляд в центре пару
+          секунд — нейтраль головы подстроится под твою посадку.
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Настройки улыбки</summary>
+      <div class="body">
+        <div class="slider">
+          <div class="label"><span>Порог улыбки</span><b id="v-smile_threshold">0.10</b></div>
+          <input type="range" id="smile_threshold" min="0.0" max="0.4" step="0.005" value="0.10">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Гистерезис</span><b id="v-smile_hysteresis">0.65</b></div>
+          <input type="range" id="smile_hysteresis" min="0.3" max="1" step="0.05" value="0.65">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Кулдаун выстрела, сек</span><b id="v-fire_cooldown">0.20</b></div>
+          <input type="range" id="fire_cooldown" min="0.05" max="1.5" step="0.05" value="0.20">
+        </div>
+        <div class="hint">
+          Посмотри значение <b>Улыбка</b> в покое и при улыбке — поставь порог посередине.
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Настройки поля</summary>
+      <div class="body">
+        <div class="slider">
+          <div class="label"><span>Ширина поля</span><b id="v-field_width">900</b></div>
+          <input type="range" id="field_width" min="400" max="1600" step="20" value="900">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Высота поля</span><b id="v-field_height">950</b></div>
+          <input type="range" id="field_height" min="400" max="1600" step="20" value="950">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Скорость пули</span><b id="v-bullet_speed">9</b></div>
+          <input type="range" id="bullet_speed" min="2" max="30" step="1" value="9">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Громкость звука</span><b id="v-volume">0.7</b></div>
+          <input type="range" id="volume" min="0" max="1" step="0.05" value="0.7">
+        </div>
+        <div class="hint">
+          Поле масштабируется автоматически под окно.
+        </div>
+      </div>
+    </details>
+
+    <div class="hint">
+      <b>Как играть:</b><br>
+      • Двигай головой и глазами — прицел следует.<br>
+      • Улыбнись (растяни губы, не открывая рот) — выстрел.<br>
+      • Открытие рта не считается улыбкой.
+    </div>
+  </aside>
+
+  <!-- ======================= FIELD ======================= -->
+  <main id="field-wrap">
+    <div id="field">
+      <div id="hud">
+        X <span id="hud-x">0</span> Y <span id="hud-y">0</span><br>
+        SHOTS <span id="hud-shots">0</span>
+      </div>
+      <div id="crosshair"></div>
+    </div>
+  </main>
+</div>
+
+<!-- Звук выстрела -->
+<audio id="blaster" src="/static/blaster.mp3" preload="auto"></audio>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- DOM ----------
+  const $ = (id) => document.getElementById(id);
+  const field       = $("field");
+  const fieldWrap   = $("field-wrap");
+  const crosshair   = $("crosshair");
+  const preview     = $("preview");
+  const previewWrap = $("preview-wrap");
+  const blaster     = $("blaster");
+  const btnStart    = $("btn-start");
+  const btnStop     = $("btn-stop");
+
+  // ---------- Config (синхронизируется с сервером) ----------
+  const CFG = {
+    field_width: 900,
+    field_height: 950,
+    iris_gain: 2.6,
+    iris_gain_y: 1.6,
+    head_gain: 1.5,
+    head_gain_y: 1.0,
+    eye_deadzone: 0.03,
+    head_recenter_rate: 0.006,
+    smoothing_alpha: 0.30,
+    smile_threshold: 0.10,
+    smile_hysteresis: 0.65,
+    fire_cooldown: 0.20,
+    bullet_speed: 9.0,
+    volume: 0.7,
+  };
+
+  // ---------- State ----------
+  let cameraOn = false;
+  let lastShotId = 0;
+  let shotsCount = 0;
+  let lastAim = { x: 0.5, y: 0.5 };
+  let currentAimPx = { x: 0, y: 0 };
+  let bullets = [];
+  let rafId = null;
+  let lastFrameTime = performance.now();
+  let fpsAccum = 0, fpsFrames = 0;
+
+  // ---------- Field scaling ----------
+  function fitField() {
+    const pad = 40;
+    const availW = fieldWrap.clientWidth  - pad;
+    const availH = fieldWrap.clientHeight - pad;
+    const scaleX = availW / CFG.field_width;
+    const scaleY = availH / CFG.field_height;
+    const scale  = Math.min(scaleX, scaleY, 1.5);
+    field.style.width  = CFG.field_width  + "px";
+    field.style.height = CFG.field_height + "px";
+    field.style.transform = `scale(${scale})`;
+  }
+  window.addEventListener("resize", fitField);
+
+  // ---------- Audio ----------
+  function playBlaster() {
+    if (CFG.volume <= 0) return;
+    try {
+      const clone = blaster.cloneNode();
+      clone.volume = CFG.volume;
+      clone.play().catch(() => {/* автоплей может быть заблокирован */});
+    } catch (_) {}
+  }
+
+  // ---------- Bullets ----------
+  function spawnBullet(x, y) {
+    const el = document.createElement("div");
+    el.className = "bullet";
+    el.style.transform = `translate(${x}px, ${y}px)`;
+    field.appendChild(el);
+    bullets.push({ el, x, y });
+  }
+
+  function spawnHit(x, y) {
+    const el = document.createElement("div");
+    el.className = "hit";
+    el.style.left = x + "px";
+    el.style.top  = y + "px";
+    field.appendChild(el);
+    setTimeout(() => el.remove(), 450);
+  }
+
+  function tickBullets() {
+    const speed = CFG.bullet_speed;
+    const next = [];
+    for (const b of bullets) {
+      b.y -= speed;
+      if (b.y < -20) {
+        b.el.remove();
+        continue;
+      }
+      b.el.style.transform = `translate(${b.x}px, ${b.y}px)`;
+      next.push(b);
+    }
+    bullets = next;
+  }
+
+  // ---------- Aim ----------
+  // Нормализация: aim_x/aim_y приходят с сервера в долях поля (0..1),
+  // поэтому переводим их в пиксели поля умножением на field_width/field_height.
+  function setAim(ax, ay, fire) {
+    if (!Number.isFinite(ax) || !Number.isFinite(ay)) return;
+    const x = ax * CFG.field_width;
+    const y = ay * CFG.field_height;
+    currentAimPx = { x, y };
+    // У #crosshair margin -17px, поэтому сдвигаем на половину его размера,
+    // чтобы центр квадрата совпал с точкой прицела.
+    crosshair.style.transform =
+      `translate(${x - 17}px, ${y - 17}px)`;
+    crosshair.classList.toggle("fire", !!fire);
+
+    $("hud-x").textContent = Math.round(x);
+    $("hud-y").textContent = Math.round(y);
+  }
+
+  // ---------- State polling ----------
+  // Опрашиваем /state не чаще, чем раз в STATE_POLL_MIN_MS. Без этого браузер
+  // дёргает сервер на каждом кадре анимации (до 120 раз в секунду), и консоль
+  // забивается строками "GET /state HTTP/1.1" 200; камера всё равно даёт
+  // 30 кадров в секунду, поэтому чаще 60-70 раз в секунду смысла нет.
+  const STATE_POLL_MIN_MS = 15;
+  let lastStatePoll = 0;
+
+  async function pollState() {
+    rafId = requestAnimationFrame(pollState);
+
+    const started = performance.now();
+    if (started - lastStatePoll < STATE_POLL_MIN_MS) return;
+    lastStatePoll = started;
+
+    try {
+      const r = await fetch("/state", { cache: "no-store" });
+      const s = await r.json();
+
+      // FPS
+      const now = performance.now();
+      const dt = now - lastFrameTime;
+      lastFrameTime = now;
+      if (dt > 0) {
+        fpsAccum += 1000 / dt;
+        fpsFrames++;
+        if (fpsFrames >= 10) {
+          $("s-fps").textContent = (fpsAccum / fpsFrames).toFixed(1);
+          fpsAccum = 0; fpsFrames = 0;
+        }
+      }
+
+      // Данные (страхуемся от неполного ответа: исключение здесь оборвало бы
+      // цикл requestAnimationFrame и прицел замер бы навсегда)
+      const num = (v, d = 0) => (Number.isFinite(v) ? v : d);
+      const aimX = num(s.aim_x, 0.5), aimY = num(s.aim_y, 0.5);
+      const irisX = num(s.iris_x, 0.5), irisY = num(s.iris_y, 0.5);
+      const smileScore = num(s.smile_score);
+      const mouthOpen = num(s.mouth_open_score);
+
+      $("s-ax").textContent = aimX.toFixed(3);
+      $("s-ay").textContent = aimY.toFixed(3);
+      $("s-ix").textContent = irisX.toFixed(3);
+      $("s-iy").textContent = irisY.toFixed(3);
+      $("s-smile").textContent = (smileScore >= 0 ? "+" : "") + smileScore.toFixed(3);
+      $("s-mouth").textContent = mouthOpen.toFixed(3);
+
+      const fireEl = $("s-fire");
+      if (!s.camera) {
+        fireEl.textContent = "НЕТ КАМЕРЫ";
+        fireEl.classList.remove("fire");
+      } else if (s.smile) {
+        fireEl.textContent = "🔴 FIRE";
+        fireEl.classList.add("fire");
+      } else {
+        fireEl.textContent = "🟢 READY";
+        fireEl.classList.remove("fire");
+      }
+
+      if (s.camera) {
+        setAim(aimX, aimY, s.smile);
+
+        if (num(s.shot_id) > lastShotId) {
+          lastShotId = s.shot_id;
+          shotsCount++;
+          $("s-shots").textContent = shotsCount;
+          $("hud-shots").textContent = shotsCount;
+          spawnBullet(currentAimPx.x, currentAimPx.y);
+          playBlaster();
+        }
+      }
+    } catch (e) {
+      // Тихо — сервер может перезапускаться
+    }
+  }
+
+  // ---------- Render loop (пули) ----------
+  function renderLoop() {
+    tickBullets();
+    requestAnimationFrame(renderLoop);
+  }
+
+  // ---------- Camera start/stop ----------
+  async function startCamera() {
+    btnStart.disabled = true;
+    try {
+      const r = await fetch("/camera/start", { method: "POST" });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "ошибка запуска");
+      cameraOn = true;
+      preview.src = "/video_feed?" + Date.now();
+      previewWrap.classList.remove("off");
+      btnStop.disabled = false;
+      btnStart.textContent = "✓ КАМЕРА ЗАПУЩЕНА";
+    } catch (e) {
+      alert("Не удалось запустить камеру: " + e.message);
+      btnStart.disabled = false;
+    }
+  }
+
+  async function stopCamera() {
+    btnStop.disabled = true;
+    try {
+      await fetch("/camera/stop", { method: "POST" });
+    } catch (_) {}
+    cameraOn = false;
+    preview.src = "";
+    previewWrap.classList.add("off");
+    btnStart.disabled = false;
+    btnStart.textContent = "▶ ЗАПУСТИТЬ КАМЕРУ";
+  }
+
+  btnStart.addEventListener("click", startCamera);
+  btnStop .addEventListener("click", stopCamera);
+
+  // ---------- Sliders ----------
+  function bindSlider(id, key, fmt, applyFn) {
+    const input = $(id);
+    const out   = $("v-" + id);
+    const upd   = () => {
+      const v = parseFloat(input.value);
+      CFG[key] = v;
+      out.textContent = fmt ? fmt(v) : v;
+      pushConfig({ [key]: v });
+      if (applyFn) applyFn(v);
+    };
+    input.addEventListener("input", upd);
+    // Инициализация от сервера
+    const initial = CFG[key];
+    input.value = initial;
+    out.textContent = fmt ? fmt(initial) : initial;
+    if (applyFn) applyFn(initial);
+  }
+
+  let configPushTimer = null;
+  let configPending = {};
+  function pushConfig(patch) {
+    Object.assign(configPending, patch);
+    if (configPushTimer) return;
+    configPushTimer = setTimeout(async () => {
+      const body = configPending;
+      configPending = {};
+      configPushTimer = null;
+      try {
+        await fetch("/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (_) {}
+    }, 80);
+  }
+
+  function loadConfigFromServer() {
+    fetch("/config").then(r => r.json()).then(cfg => {
+      Object.assign(CFG, cfg);
+      // Обновить UI
+      for (const key of Object.keys(cfg)) {
+        const input = $(key);
+        const out   = $("v-" + key);
+        if (input && out) {
+          input.value = cfg[key];
+          out.textContent = cfg[key];
+        }
+      }
+      fitField();
+    }).catch(() => {});
+  }
+
+  // ---------- Bind all sliders ----------
+  function initSliders() {
+    bindSlider("iris_gain",        "iris_gain");
+    bindSlider("head_gain",        "head_gain");
+    bindSlider("smoothing_alpha",  "smoothing_alpha", v => v.toFixed(2));
+    bindSlider("smile_threshold",  "smile_threshold", v => v.toFixed(3));
+    bindSlider("smile_hysteresis", "smile_hysteresis", v => v.toFixed(2));
+    bindSlider("fire_cooldown",    "fire_cooldown", v => v.toFixed(2));
+    bindSlider("bullet_speed",     "bullet_speed");
+    bindSlider("volume",           "volume", v => v.toFixed(2));
+    bindSlider("field_width",      "field_width", null, () => fitField());
+    bindSlider("field_height",     "field_height", null, () => fitField());
+  }
+
+  // ---------- Boot ----------
+  function boot() {
+    initSliders();
+    fitField();
+    loadConfigFromServer();
+    renderLoop();
+    pollState();
+    // Автостарт камеры
+    startCamera();
+  }
+
+  // Разблокировка audio по первому клику (Chrome autoplay policy)
+  document.addEventListener("click", () => {
+    blaster.play().then(() => blaster.pause()).catch(() => {});
+  }, { once: true });
+
+  boot();
+})();
+</script>
+</body>
+</html>

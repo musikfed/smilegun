@@ -1,3 +1,10 @@
+from config import CFG
+
+FIELD_CENTER = 0.5
+
+def clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
 def hybrid_aim(head_x: float, head_y: float, gaze_x: float, gaze_y: float,
                neutral_x: float, neutral_y: float) -> tuple[float, float]:
     """Гибридный прицел: смещение головы от нейтрали + взгляд.

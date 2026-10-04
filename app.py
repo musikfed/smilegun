@@ -20,3 +20,11 @@ def hybrid_aim(head_x: float, head_y: float, gaze_x: float, gaze_y: float,
     offset_x = gaze_x * CFG.iris_gain
     offset_y = gaze_y * CFG.iris_gain * CFG.iris_gain_y
     return clamp01(FIELD_CENTER + offset_x), clamp01(FIELD_CENTER + offset_y)
+
+def calibrate(head_x: float, head_y: float, gaze_x: float, gaze_y: float,
+              neutral_x: float, neutral_y: float) -> None:
+    """Калибровка: корректировка нейтрали головы и коэффициентов."""
+    CFG.head_gain = (head_x - neutral_x) / gaze_x
+    CFG.head_gain_y = (head_y - neutral_y) / gaze_y
+    CFG.iris_gain = 1.0 / CFG.head_gain
+    CFG.iris_gain_y = 1.0 / CFG.head_gain_y

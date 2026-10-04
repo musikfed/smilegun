@@ -17,8 +17,6 @@ def hybrid_aim(head_x: float, head_y: float, gaze_x: float, gaze_y: float,
     Взгляд и голова складываются как два слагаемых одного смещения,
     поэтому центр поля (0.5, 0.5) соответствует нейтральной позе.
     """
-    offset_x = ((head_x - neutral_x) * CFG.head_gain
-                + gaze_x * CFG.iris_gain)
-    offset_y = ((head_y - neutral_y) * CFG.head_gain * CFG.head_gain_y
-                + gaze_y * CFG.iris_gain * CFG.iris_gain_y)
+    offset_x = gaze_x * CFG.iris_gain
+    offset_y = gaze_y * CFG.iris_gain * CFG.iris_gain_y
     return clamp01(FIELD_CENTER + offset_x), clamp01(FIELD_CENTER + offset_y)

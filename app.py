@@ -1,11 +1,8 @@
-import os
 import threading
 import time
-from pathlib import Path
 import cv2
 import mediapipe as mp
-import numpy as np
-from flask import Flask, Response, request, jsonify
+from flask import Flask, Response, request, jsonify, render_template
 from config import CFG
 from diagnostics import suppress_noise
 
@@ -20,12 +17,16 @@ LEFT_EYE_TOP = 159
 LEFT_EYE_BOTTOM = 145
 RIGHT_EYE_TOP = 386
 RIGHT_EYE_BOTTOM = 374
-NOSE_TIP = 4
 MOUTH_LEFT = 61
 MOUTH_RIGHT = 291
-BOTTOM_LIP = 14
+LIP_TOP_INNER = 13
+LIP_BOTTOM_INNER = 14
 
+# Глаз уже этой ширины (в долях кадра) считаем невалидным: на него нельзя делить.
 MIN_EYE_WIDTH = 0.012
+
+# Центр игрового поля: прицел уходит на клиент в долях поля (0..1).
+FIELD_CENTER = 0.5
 
 # Класс для экспоненциального скользящего среднего
 class EMA:
@@ -40,27 +41,37 @@ class EMA:
             self.value = self.alpha * new_value + (1 - self.alpha) * self.value
         return self.value
 
-# Функция для измерения координат
-def measure(lm):
-    return lm.x, lm.y
+def clamp01(value: float) -> float:
+    """Прицел не должен выходить за поле."""
+    return 0.0 if value < 0.0 else (1.0 if value > 1.0 else value)
 
-# Функция для расчета прицела
-def hybrid_aim(head_x: float, head_y: float, gaze_x: float, gaze_y: float,
-               neutral_x: float, neutral_y: float) -> tuple[float, float]:
-    """Гибридный прицел: смещение головы от нейтрали + взгляд.
+def eye_gaze(iris_x: float, iris_y: float, outer_x: float, inner_x: float,
+             top_y: float, bottom_y: float) -> tuple[float, float, float]:
+    """Взгляд одного глаза в единицах размера ЭТОГО глаза.
 
-    Считаем смещение от центра поля, а не абсолютную координату в кадре.
-    Раньше было raw_ax = head_x * head_gain + ..., то есть уже ~0.5 при
-    взгляде прямо: вместе с добавкой от зрачков значение сразу уходило за
-    1.0, и прицел залипал на краю поля.
+    Зрачок нормируется на центр своего глаза, а не на центр кадра. Когда
+    человек двигает головой, глаз и зрачок едут по кадру вместе, и отношение
+    (зрачок - центр глаза) / ширина глаза не меняется — остаётся только
+    поворот зрачка. Именно поэтому кубик слушается только глаз.
 
-    Взгляд и голова складываются как два слагаемых одного смещения,
-    поэтому центр поля (0.5, 0.5) соответствует нейтральной позе.
+    Третий элемент результата — ширина глаза: по ней нормируются метрики рта,
+    чтобы улыбка не зависела от того, близко или далеко лицо от камеры.
     """
-    offset_x = ((head_x - neutral_x) * CFG.head_gain
-                + gaze_x * CFG.iris_gain)
-    offset_y = ((head_y - neutral_y) * CFG.head_gain * CFG.head_gain_y
-                + gaze_y * CFG.iris_gain * CFG.iris_gain_y)
+    eye_w = max(abs(outer_x - inner_x), MIN_EYE_WIDTH)
+    eye_h = max(abs(top_y - bottom_y), MIN_EYE_WIDTH)
+    center_x = (outer_x + inner_x) / 2.0
+    center_y = (top_y + bottom_y) / 2.0
+    return (iris_x - center_x) / eye_w, (iris_y - center_y) / eye_h, eye_w
+
+def gaze_to_aim(gaze_x: float, gaze_y: float) -> tuple[float, float]:
+    """Прицел только по зрачкам: смещение взгляда от откалиброванной нейтрали.
+
+    CFG.gaze_neutral_x/y запоминает кнопка «Калибровка», когда человек смотрит
+    в центр поля. Поэтому прицел не зависит ни от посадки, ни от размера лица,
+    ни от положения головы — только от движения зрачков.
+    """
+    offset_x = (gaze_x - CFG.gaze_neutral_x) * CFG.iris_gain
+    offset_y = (gaze_y - CFG.gaze_neutral_y) * CFG.iris_gain * CFG.iris_gain_y
     return clamp01(FIELD_CENTER + offset_x), clamp01(FIELD_CENTER + offset_y)
 
 # Класс для отслеживания камеры
@@ -74,13 +85,32 @@ class CameraTracker:
             "camera": False,
             "aim_x": 0.5,
             "aim_y": 0.5,
-            "iris_x": 0.5,
-            "iris_y": 0.5,
+            "iris_x": 0.0,
+            "iris_y": 0.0,
+            "gaze_dx": 0.0,
+            "gaze_dy": 0.0,
+            "neutral_x": CFG.gaze_neutral_x,
+            "neutral_y": CFG.gaze_neutral_y,
             "smile_score": 0.0,
             "mouth_open_score": 0.0,
             "smile": False,
+            "mouth_open": False,
+            "calibrating": False,
             "shot_id": 0,
+            # Диагностика камеры: без неё «НЕТ КАМЕРЫ» не отличить от
+            # «кадры идут, но лица не видно» и от «устройство занято».
+            "frames_read": 0,
+            "face": False,
+            "fps": 0.0,
+            "camera_open": False,
+            "error": None,
         }
+        self._calib_samples = None
+        self._prev_smile = False
+        self._prev_mouth_open = False
+        self._held = {"smile": False, "mouth_open": False}
+        self._fps_window_start = time.time()
+        self._fps_frames = 0
         self.face_mesh = mp.solutions.face_mesh.FaceMesh(
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
@@ -89,10 +119,43 @@ class CameraTracker:
         )
         self.iris_ema_x = EMA(CFG.smoothing_alpha)
         self.iris_ema_y = EMA(CFG.smoothing_alpha)
-        self.head_ema_x = EMA(CFG.smoothing_alpha)
-        self.head_ema_y = EMA(CFG.smoothing_alpha)
         self.smile_ema = EMA(CFG.smoothing_alpha)
         self.mouth_ema = EMA(CFG.smoothing_alpha)
+
+    CALIB_FRAMES = 15
+    MAX_READ_FAILURES = 60      # ~2 секунды без кадров
+    REOPEN_COOLDOWN = 5.0       # сек между попытками переоткрыть камеру
+
+    def start_calibration(self) -> None:
+        """Запомнить нейтраль взгляда: усредняем следующие CALIB_FRAMES кадров."""
+        with self.lock:
+            self._calib_samples = []
+
+    def _collect_calibration(self, gaze_x: float, gaze_y: float) -> None:
+        if self._calib_samples is None:
+            return
+        self._calib_samples.append((gaze_x, gaze_y))
+        if len(self._calib_samples) < self.CALIB_FRAMES:
+            return
+        xs = [sample[0] for sample in self._calib_samples]
+        ys = [sample[1] for sample in self._calib_samples]
+        CFG.gaze_neutral_x = sum(xs) / len(xs)
+        CFG.gaze_neutral_y = sum(ys) / len(ys)
+        self._calib_samples = None
+
+    def _threshold(self, key: str, value: float, threshold: float) -> bool:
+        """Порог с гистерезисом: включается выше threshold, гаснет ниже
+        threshold * smile_hysteresis.
+
+        Без гистерезиса значение, дрожащее у порога, выдаёт очередь выстрелов.
+        """
+        release = threshold * CFG.smile_hysteresis
+        if self._held[key]:
+            if value < release:
+                self._held[key] = False
+        elif value > threshold:
+            self._held[key] = True
+        return self._held[key]
 
     def _make_mesh(self, frame):
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -101,15 +164,25 @@ class CameraTracker:
             return results.multi_face_landmarks[0]
         return None
 
+    def _open_capture(self) -> None:
+        """Открыть камеру: сначала DSHOW, потом бэкенд по умолчанию."""
+        self.cap = cv2.VideoCapture(CFG.camera_index, cv2.CAP_DSHOW)
+        if not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(CFG.camera_index)
+
     def start(self):
         with self.lock:
             if self.running:
                 return
-            self.cap = cv2.VideoCapture(CFG.camera_index, cv2.CAP_DSHOW)
-            if not self.cap.isOpened():
-                self.cap = cv2.VideoCapture(CFG.camera_index)
+            # После перезапуска камеры стрельба начинается с чистого состояния.
+            self._prev_smile = False
+            self._prev_mouth_open = False
+            self._held = {"smile": False, "mouth_open": False}
+            self._open_capture()
             if not self.cap.isOpened():
                 raise RuntimeError("Не удалось открыть камеру")
+            self.state["camera_open"] = True
+            self.state["error"] = None
             self.running = True
             self.thread = threading.Thread(target=self._loop)
             self.thread.start()
@@ -121,78 +194,117 @@ class CameraTracker:
             self.running = False
             self.cap.release()
             self.thread.join()
+            self.frame = None
+            self.state["camera"] = False
+            self.state["face"] = False
+            self.state["camera_open"] = False
 
     def _loop(self):
+        read_failures = 0
+        last_reopen = 0.0
         while self.running:
             ret, frame = self.cap.read()
             if not ret:
+                # Камера открыта, но кадров нет: так выглядит занятое устройство
+                # (или кривой бэкенд). Не крутимся вхолостую и говорим об этом.
+                read_failures += 1
+                if read_failures >= self.MAX_READ_FAILURES:
+                    if time.time() - last_reopen > self.REOPEN_COOLDOWN:
+                        last_reopen = time.time()
+                        read_failures = 0
+                        self._open_capture()
+                        with self.lock:
+                            self.state["camera_open"] = self.cap.isOpened()
+                    with self.lock:
+                        # Кадров нет — значит и про лицо мы ничего не знаем:
+                        # не оставляем устаревшее «лицо есть».
+                        self.state["face"] = False
+                        self.state["camera"] = False
+                        self.state["error"] = (
+                            "Камера открыта, но не отдаёт кадры. Устройство занято "
+                            "другим процессом (или камера выключена)."
+                        )
+                time.sleep(0.02)
                 continue
+            read_failures = 0
             with self.lock:
                 self.frame = frame
-                self._process_frame(frame)
+                self.state["error"] = None
+                self.state["frames_read"] += 1
+                self._fps_frames += 1
+                now = time.time()
+                if now - self._fps_window_start >= 1.0:
+                    self.state["fps"] = self._fps_frames / (now - self._fps_window_start)
+                    self._fps_window_start = now
+                    self._fps_frames = 0
+                try:
+                    self._process_frame(frame)
+                except Exception as exc:
+                    # Один плохой кадр не должен убивать поток трекинга.
+                    self.state["error"] = f"{type(exc).__name__}: {exc}"
 
     def _process_frame(self, frame):
         mesh = self._make_mesh(frame)
-        if mesh:
-            # Координаты зрачков
-            iris_lx, iris_ly = measure(mesh.landmark[LEFT_IRIS_CENTER])
-            iris_rx, iris_ry = measure(mesh.landmark[RIGHT_IRIS_CENTER])
-            iris_x = (iris_lx + iris_rx) / 2
-            iris_y = (iris_ly + iris_ry) / 2
+        self.state["face"] = bool(mesh)
+        if not mesh:
+            return
 
-            # Координаты глаз
-            eye_lx1, eye_ly1 = measure(mesh.landmark[LEFT_EYE_OUTER])
-            eye_lx2, eye_ly2 = measure(mesh.landmark[LEFT_EYE_INNER])
-            eye_rx1, eye_ry1 = measure(mesh.landmark[RIGHT_EYE_OUTER])
-            eye_rx2, eye_ry2 = measure(mesh.landmark[RIGHT_EYE_INNER])
+        lm = mesh.landmark
 
-            # Ширина глаз
-            eye_lw = abs(eye_lx1 - eye_lx2)
-            eye_rw = abs(eye_rx1 - eye_rx2)
+        # Взгляд: зрачок относительно центра своего глаза, в размерах глаза
+        gaze_lx, gaze_ly, eye_lw = eye_gaze(lm[LEFT_IRIS_CENTER].x, lm[LEFT_IRIS_CENTER].y,
+                                            lm[LEFT_EYE_OUTER].x, lm[LEFT_EYE_INNER].x,
+                                            lm[LEFT_EYE_TOP].y, lm[LEFT_EYE_BOTTOM].y)
+        gaze_rx, gaze_ry, eye_rw = eye_gaze(lm[RIGHT_IRIS_CENTER].x, lm[RIGHT_IRIS_CENTER].y,
+                                            lm[RIGHT_EYE_OUTER].x, lm[RIGHT_EYE_INNER].x,
+                                            lm[RIGHT_EYE_TOP].y, lm[RIGHT_EYE_BOTTOM].y)
+        gaze_x = self.iris_ema_x.update((gaze_lx + gaze_rx) / 2.0)
+        gaze_y = self.iris_ema_y.update((gaze_ly + gaze_ry) / 2.0)
+        eye_w = (eye_lw + eye_rw) / 2.0     # масштаб лица для метрик рта
 
-            # Нормализация координат зрачков
-            iris_x = (iris_x - 0.5) / eye_lw
-            iris_y = (iris_y - 0.5) / eye_lw
+        # Улыбка — это рот, растянутый в ширину (губы можно сжать, рот
+        # открывать не надо), поэтому меряем ширину рта, а не подъём углов.
+        mouth_w = abs(lm[MOUTH_LEFT].x - lm[MOUTH_RIGHT].x)
+        smile_score = self.smile_ema.update(mouth_w / eye_w)
 
-            # Нормализация координат головы
-            nose_x, nose_y = measure(mesh.landmark[NOSE_TIP])
-            head_x = nose_x - 0.5
-            head_y = nose_y - 0.5
+        # Широко открытый рот — просвет между внутренними губами.
+        mouth_h = abs(lm[LIP_TOP_INNER].y - lm[LIP_BOTTOM_INNER].y)
+        mouth_open_score = self.mouth_ema.update(mouth_h / eye_w)
 
-            # Нормализация координат улыбки
-            mouth_lx, mouth_ly = measure(mesh.landmark[MOUTH_LEFT])
-            mouth_rx, mouth_ry = measure(mesh.landmark[MOUTH_RIGHT])
-            mouth_x = (mouth_lx + mouth_rx) / 2
-            mouth_y = (mouth_ly + mouth_ry) / 2
-            smile_score = mouth_y - nose_y
-            mouth_open_score = abs(mouth_lx - mouth_rx)
+        smile = self._threshold("smile", smile_score, CFG.smile_threshold)
+        mouth_open = self._threshold("mouth_open", mouth_open_score,
+                                     CFG.mouth_open_threshold)
 
-            # Сглаживание
-            iris_x = self.iris_ema_x.update(iris_x)
-            iris_y = self.iris_ema_y.update(iris_y)
-            head_x = self.head_ema_x.update(head_x)
-            head_y = self.head_ema_y.update(head_y)
-            smile_score = self.smile_ema.update(smile_score)
-            mouth_open_score = self.mouth_ema.update(mouth_open_score)
+        # Выстрел по началу события: улыбка — один, открытый рот — двойной.
+        shots = 0
+        if smile and not self._prev_smile:
+            shots = 1
+        if mouth_open and not self._prev_mouth_open:
+            shots = 2
+        self._prev_smile = smile
+        self._prev_mouth_open = mouth_open
 
-            # Проверка улыбки
-            smile = smile_score > CFG.smile_threshold and mouth_open_score < CFG.smile_hysteresis * CFG.smile_threshold
+        self._collect_calibration(gaze_x, gaze_y)
+        aim_x, aim_y = gaze_to_aim(gaze_x, gaze_y)
 
-            # Расчет прицела
-            aim_x, aim_y = hybrid_aim(head_x, head_y, iris_x, iris_y, 0.5, 0.5)
-
-            # Обновление состояния
-            self.state.update({
-                "camera": True,
-                "aim_x": aim_x,
-                "aim_y": aim_y,
-                "iris_x": iris_x,
-                "iris_y": iris_y,
-                "smile_score": smile_score,
-                "mouth_open_score": mouth_open_score,
-                "smile": smile,
-                "shot_id": self.state["shot_id"] + (1 if smile else 0),
-            })
+        # Обновление состояния
+        self.state.update({
+            "camera": True,
+            "aim_x": aim_x,
+            "aim_y": aim_y,
+            "iris_x": gaze_x,
+            "iris_y": gaze_y,
+            "gaze_dx": gaze_x - CFG.gaze_neutral_x,
+            "gaze_dy": gaze_y - CFG.gaze_neutral_y,
+            "neutral_x": CFG.gaze_neutral_x,
+            "neutral_y": CFG.gaze_neutral_y,
+            "smile_score": smile_score,
+            "mouth_open_score": mouth_open_score,
+            "smile": smile,
+            "mouth_open": mouth_open,
+            "calibrating": self._calib_samples is not None,
+            "shot_id": self.state["shot_id"] + shots,
+        })
 
     def get_frame(self):
         with self.lock:
@@ -213,6 +325,9 @@ def mjpeg_stream():
     while True:
         frame = tracker.get_frame()
         if frame is None:
+            # Без паузы этот цикл выедает GIL: /state начинает отвечать по
+            # 100 мс, и FPS в интерфейсе падает до 10.
+            time.sleep(0.02)
             continue
         ret, buffer = cv2.imencode('.jpg', frame)
         if not ret:
@@ -224,7 +339,8 @@ def mjpeg_stream():
 # Главная страница
 @app.route('/')
 def index():
-    return app.send_static_file('index.html')
+    # Шаблон лежит в templates/index.html: статикой он не отдаётся.
+    return render_template('index.html')
 
 # MJPEG поток для превью камеры
 @app.route('/video_feed')
@@ -246,6 +362,19 @@ def config():
         return jsonify(CFG.as_dict())
     return jsonify(CFG.as_dict())
 
+# Калибровка взгляда: запомнить текущее положение зрачков как нейтраль
+@app.route('/calibrate', methods=['POST'])
+def calibrate():
+    tracker.start_calibration()
+    return jsonify({"ok": True, "frames": tracker.CALIB_FRAMES})
+
+# Сброс калибровки к нулевой нейтрали
+@app.route('/calibrate/reset', methods=['POST'])
+def calibrate_reset():
+    CFG.gaze_neutral_x = 0.0
+    CFG.gaze_neutral_y = 0.0
+    return jsonify({"ok": True})
+
 # Запуск камеры
 @app.route('/camera/start', methods=['POST'])
 def camera_start():
@@ -264,5 +393,14 @@ def camera_stop():
 # Запуск приложения
 if __name__ == "__main__":
     suppress_noise()
-    tracker.start()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    try:
+        tracker.start()
+    except RuntimeError as e:
+        # Сервер всё равно поднимаем: на странице есть кнопка запуска камеры.
+        print(f"[!] {e}. Закрой приложение, которое держит камеру, и нажми "
+              f"«ЗАПУСТИТЬ КАМЕРУ» на странице.")
+    # use_reloader=False обязательно: с релоадером Flask поднимает ВТОРОЙ
+    # процесс, tracker.start() выполняется в обоих, камеру открывают два
+    # процесса — и тот, что получил устройство, не обслуживает браузер.
+    # Снаружи это выглядит как чёрное превью и «НЕТ КАМЕРЫ».
+    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)

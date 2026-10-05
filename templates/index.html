@@ -27,22 +27,32 @@
   }
   #app {
     display: grid;
-    grid-template-columns: 360px 1fr;
+    /* Ширина меню тянется за окном, а не фиксированные 360px, и потолок
+       clamp взят с запасом: при 50% масштабе страницы CSS-пиксели вдвое
+       мельче, и жёсткая ширина превращала меню в нечитаемую полоску, а поле
+       не использовало освободившееся место. */
+    grid-template-columns: clamp(300px, 24vw, 900px) 1fr;
     height: 100vh;
   }
   /* ---------- Sidebar ---------- */
   #sidebar {
     background: var(--panel);
     border-right: 1px solid var(--border);
-    padding: 16px;
+    padding: 1em;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 0.9em;
+    min-height: 0;
+    /* Размер шрифта привязан к ширине окна, а не к пикселям: при 50%
+       масштабе страницы текст остаётся читаемым, а не превращается в 6px.
+       Все размеры внутри меню — в em, поэтому масштабируются вместе с ним. */
+    font-size: clamp(12px, 0.9vw, 40px);
+    scrollbar-width: thin;
   }
   #sidebar h1 {
-    font-size: 18px;
-    margin: 0 0 4px;
+    font-size: 1.35em;
+    margin: 0 0 0.2em;
     letter-spacing: 0.5px;
   }
   #sidebar h1 span { color: var(--accent); }
@@ -53,6 +63,8 @@
     overflow: hidden;
     background: #000;
     aspect-ratio: 4 / 3;
+    /* На низких окнах превью подрезается, а не выдавливает настройки */
+    max-height: 26vh;
   }
   #preview {
     display: block;
@@ -60,30 +72,39 @@
     height: 100%;
     object-fit: cover;
   }
-  .preview-wrap.off::after {
+  .preview-wrap.off::after,
+  .preview-wrap.err::after {
     content: "КАМЕРА ВЫКЛЮЧЕНА";
     position: absolute;
     inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
+    text-align: center;
+    padding: 0 0.8em;
     color: var(--muted);
-    font-size: 13px;
+    font-size: 1em;
     letter-spacing: 2px;
     background: rgba(0,0,0,0.7);
+  }
+  /* Камера запущена, но кадров нет — пишем причину прямо на превью */
+  .preview-wrap.err::after {
+    content: "КАМЕРА НЕ ОТДАЁТ КАДРЫ";
+    color: var(--red);
+    letter-spacing: 1px;
   }
   .btn-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 8px;
+    gap: 0.6em;
   }
   button {
     background: #21262d;
     border: 1px solid var(--border);
     color: var(--text);
     border-radius: 6px;
-    padding: 10px 12px;
-    font-size: 13px;
+    padding: 0.7em 0.9em;
+    font-size: 1em;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
   }
@@ -111,10 +132,10 @@
   .stats {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 6px 12px;
-    font-size: 12px;
+    gap: 0.35em 0.9em;
+    font-size: 1em;
     font-family: "Consolas", "Menlo", monospace;
-    padding: 10px 12px;
+    padding: 0.7em 0.9em;
     background: #0d1117;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -130,9 +151,9 @@
     overflow: hidden;
   }
   details > summary {
-    padding: 10px 12px;
+    padding: 0.7em 0.9em;
     cursor: pointer;
-    font-size: 13px;
+    font-size: 1em;
     font-weight: 600;
     background: #0d1117;
     list-style: none;
@@ -146,17 +167,18 @@
     transition: transform 0.15s;
   }
   details[open] > summary::before { content: "▾ "; }
-  details .body { padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+  details .body { padding: 0.7em 0.9em 1em; display: flex; flex-direction: column; gap: 0.9em; }
 
   .slider {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 0.25em;
   }
   .slider .label {
     display: flex;
     justify-content: space-between;
-    font-size: 12px;
+    gap: 0.5em;
+    font-size: 0.95em;
     color: var(--muted);
   }
   .slider .label b { color: var(--text); font-weight: 600; font-family: monospace; }
@@ -165,7 +187,7 @@
     accent-color: var(--accent);
   }
   .hint {
-    font-size: 11px;
+    font-size: 0.85em;
     color: var(--muted);
     line-height: 1.5;
   }
@@ -173,10 +195,11 @@
     background: #21262d;
     border: 1px solid var(--border);
     border-radius: 3px;
-    padding: 1px 5px;
+    padding: 0 0.3em;
     font-family: monospace;
-    font-size: 10px;
+    font-size: 0.85em;
   }
+  .hint.err { color: var(--red); }
 
   /* ---------- Game field ---------- */
   #field-wrap {
@@ -185,7 +208,8 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    padding: 20px;
+    padding: clamp(8px, 1.2vw, 24px);
+    min-height: 0;
   }
   #field {
     position: relative;
@@ -200,6 +224,9 @@
       0 0 40px rgba(88,166,255,0.15),
       inset 0 0 60px rgba(0,0,0,0.8);
     transform-origin: center center;
+    /* margin:auto вместо одной лишь флекс-центровки: при масштабе больше
+       единицы поле не обрезается по верхнему/левому краю */
+    margin: auto;
   }
   #crosshair {
     position: absolute;
@@ -221,6 +248,12 @@
     box-shadow:
       0 0 14px rgba(248,81,73,1),
       0 0 40px rgba(248,81,73,0.7);
+  }
+  /* Нет лица в кадре — кубик стоит по центру и не светится */
+  #crosshair.off {
+    background: #30363d;
+    box-shadow: none;
+    opacity: 0.55;
   }
   .bullet {
     position: absolute;
@@ -279,58 +312,73 @@
     </div>
 
     <div class="stats">
-      <div class="k">FPS</div>            <div class="v" id="s-fps">—</div>
+      <div class="k">FPS страницы</div>   <div class="v" id="s-fps">—</div>
+      <div class="k">FPS камеры</div>     <div class="v" id="s-camfps">—</div>
+      <div class="k">Кадров всего</div>   <div class="v" id="s-frames">0</div>
+      <div class="k">Лицо в кадре</div>   <div class="v" id="s-face">нет</div>
       <div class="k">Прицел X</div>       <div class="v" id="s-ax">—</div>
       <div class="k">Прицел Y</div>       <div class="v" id="s-ay">—</div>
       <div class="k">Зрачок X</div>       <div class="v" id="s-ix">—</div>
       <div class="k">Зрачок Y</div>       <div class="v" id="s-iy">—</div>
+      <div class="k">Смещение X/Y</div>   <div class="v" id="s-dx">—</div>
+      <div class="k">Нейтраль X/Y</div>   <div class="v" id="s-neutral">—</div>
       <div class="k">Улыбка</div>         <div class="v" id="s-smile">—</div>
       <div class="k">Рот открыт</div>     <div class="v" id="s-mouth">—</div>
       <div class="k">Состояние</div>      <div class="v" id="s-fire">—</div>
       <div class="k">Выстрелов</div>      <div class="v" id="s-shots">0</div>
     </div>
+    <div class="hint err" id="s-error" style="display:none"></div>
 
     <details open>
       <summary>Настройки управления</summary>
       <div class="body">
         <div class="slider">
-          <div class="label"><span>Усиление зрачков</span><b id="v-iris_gain">2.6</b></div>
+          <div class="label"><span>Усиление зрачков (X)</span><b id="v-iris_gain">2.6</b></div>
           <input type="range" id="iris_gain" min="0.5" max="8" step="0.1" value="2.6">
         </div>
         <div class="slider">
-          <div class="label"><span>Вклад головы</span><b id="v-head_gain">1.5</b></div>
-          <input type="range" id="head_gain" min="0" max="4" step="0.1" value="1.5">
+          <div class="label"><span>Усиление зрачков (Y)</span><b id="v-iris_gain_y">1.6</b></div>
+          <input type="range" id="iris_gain_y" min="0.2" max="4" step="0.1" value="1.6">
         </div>
         <div class="slider">
           <div class="label"><span>Сглаживание (меньше = плавнее)</span><b id="v-smoothing_alpha">0.30</b></div>
           <input type="range" id="smoothing_alpha" min="0.05" max="1" step="0.01" value="0.30">
         </div>
+        <div class="btn-row">
+          <button id="btn-calibrate">🎯 КАЛИБРОВКА</button>
+          <button id="btn-calibrate-reset">СБРОС</button>
+        </div>
         <div class="hint">
+          Смотри в центр поля и нажми <b>КАЛИБРОВКА</b> — прицел запомнит
+          нейтраль взгляда (кнопка работает ~0.5 секунды).<br>
+          Голова в прицеле не участвует вовсе: кубик идёт только за зрачками.<br>
           Если прицел <b>дёргается</b> — уменьши сглаживание.<br>
-          Если <b>не достаёт до краёв</b> — увеличь усиление.<br>
-          Центр поля прицел находит сам: подержи взгляд в центре пару
-          секунд — нейтраль головы подстроится под твою посадку.
+          Если <b>не достаёт до краёв</b> — увеличь усиление.
         </div>
       </div>
     </details>
 
     <details open>
-      <summary>Настройки улыбки</summary>
+      <summary>Настройки улыбки и выстрела</summary>
       <div class="body">
         <div class="slider">
-          <div class="label"><span>Порог улыбки</span><b id="v-smile_threshold">0.10</b></div>
-          <input type="range" id="smile_threshold" min="0.0" max="0.4" step="0.005" value="0.10">
+          <div class="label"><span>Порог улыбки (ширина рта / глаз)</span><b id="v-smile_threshold">1.55</b></div>
+          <input type="range" id="smile_threshold" min="1.1" max="3" step="0.01" value="1.55">
         </div>
         <div class="slider">
-          <div class="label"><span>Гистерезис</span><b id="v-smile_hysteresis">0.65</b></div>
+          <div class="label"><span>Гистерезис (отпускание)</span><b id="v-smile_hysteresis">0.65</b></div>
           <input type="range" id="smile_hysteresis" min="0.3" max="1" step="0.05" value="0.65">
         </div>
         <div class="slider">
-          <div class="label"><span>Кулдаун выстрела, сек</span><b id="v-fire_cooldown">0.20</b></div>
-          <input type="range" id="fire_cooldown" min="0.05" max="1.5" step="0.05" value="0.20">
+          <div class="label"><span>Открытый рот → двойной выстрел</span><b id="v-mouth_open_threshold">0.30</b></div>
+          <input type="range" id="mouth_open_threshold" min="0.05" max="0.8" step="0.01" value="0.30">
         </div>
         <div class="hint">
-          Посмотри значение <b>Улыбка</b> в покое и при улыбке — поставь порог посередине.
+          Улыбка считается по <b>ширине</b> рта: улыбайся широко, губы можно
+          сжать — рот открывать не нужно.<br>
+          Посмотри значение <b>Улыбка</b> в покое и при улыбке — порог поставь
+          посередине.<br>
+          <b>Широко открытый рот</b> — двойной выстрел.
         </div>
       </div>
     </details>
@@ -362,9 +410,10 @@
 
     <div class="hint">
       <b>Как играть:</b><br>
-      • Двигай головой и глазами — прицел следует.<br>
-      • Улыбнись (растяни губы, не открывая рот) — выстрел.<br>
-      • Открытие рта не считается улыбкой.
+      • Двигай <b>только глазами</b> — голова не нужна, кубик идёт за зрачками.<br>
+      • Широко улыбнись — одиночный выстрел.<br>
+      • Открой рот широко — двойной выстрел.<br>
+      • Первым делом нажми <b>КАЛИБРОВКА</b>, глядя в центр поля.
     </div>
   </aside>
 
@@ -399,21 +448,36 @@
   const btnStop     = $("btn-stop");
 
   // ---------- Config (синхронизируется с сервером) ----------
+  // Ключи должны совпадать с config.py: сервер молча игнорирует незнакомые.
   const CFG = {
     field_width: 900,
     field_height: 950,
     iris_gain: 2.6,
     iris_gain_y: 1.6,
-    head_gain: 1.5,
-    head_gain_y: 1.0,
-    eye_deadzone: 0.03,
-    head_recenter_rate: 0.006,
     smoothing_alpha: 0.30,
-    smile_threshold: 0.10,
+    gaze_neutral_x: 0.0,
+    gaze_neutral_y: 0.0,
+    smile_threshold: 1.55,
     smile_hysteresis: 0.65,
-    fire_cooldown: 0.20,
+    mouth_open_threshold: 0.30,
     bullet_speed: 9.0,
-    volume: 0.7,
+    volume: 0.7,          // только клиент: громкость звука выстрела
+  };
+
+  // Формат отображения значений — общий для слайдеров и загрузки с сервера
+  const FMT = {
+    iris_gain:            v => v.toFixed(1),
+    iris_gain_y:          v => v.toFixed(1),
+    smoothing_alpha:      v => v.toFixed(2),
+    gaze_neutral_x:       v => v.toFixed(3),
+    gaze_neutral_y:       v => v.toFixed(3),
+    smile_threshold:      v => v.toFixed(2),
+    smile_hysteresis:     v => v.toFixed(2),
+    mouth_open_threshold: v => v.toFixed(2),
+    bullet_speed:         v => String(v),
+    volume:               v => v.toFixed(2),
+    field_width:          v => String(v),
+    field_height:         v => String(v),
   };
 
   // ---------- State ----------
@@ -428,18 +492,27 @@
   let fpsAccum = 0, fpsFrames = 0;
 
   // ---------- Field scaling ----------
+  // Поле всегда занимает всё доступное место. Раньше масштаб упирался в 1.5,
+  // поэтому при 50% масштабе страницы поле висело маленьким пятном посреди
+  // пустого окна.
+  let fieldScale = 1;
   function fitField() {
     const pad = 40;
     const availW = fieldWrap.clientWidth  - pad;
     const availH = fieldWrap.clientHeight - pad;
+    if (availW <= 0 || availH <= 0) return;
     const scaleX = availW / CFG.field_width;
     const scaleY = availH / CFG.field_height;
-    const scale  = Math.min(scaleX, scaleY, 1.5);
+    fieldScale = Math.max(0.1, Math.min(scaleX, scaleY));
     field.style.width  = CFG.field_width  + "px";
     field.style.height = CFG.field_height + "px";
-    field.style.transform = `scale(${scale})`;
+    field.style.transform = `scale(${fieldScale})`;
   }
   window.addEventListener("resize", fitField);
+  // Окно может менять размер и без события resize (зум, панели браузера)
+  if (window.ResizeObserver) {
+    new ResizeObserver(fitField).observe(fieldWrap);
+  }
 
   // ---------- Audio ----------
   function playBlaster() {
@@ -485,21 +558,42 @@
   }
 
   // ---------- Aim ----------
-  // Нормализация: aim_x/aim_y приходят с сервера в долях поля (0..1),
-  // поэтому переводим их в пиксели поля умножением на field_width/field_height.
-  function setAim(ax, ay, fire) {
+  // aim_x/aim_y приходят с сервера в долях поля (0..1). Переводим их в пиксели
+  // с отступом AIM_PAD от рамки: иначе на краю поля кубик уезжает за границу
+  // наполовину, и не видно, куда именно он пришёл.
+  const AIM_PAD = 22;
+  // Красная вспышка живёт ровно столько, сколько длится выстрел, и не зависит
+  // от того, как долго держится улыбка (у неё ещё и гистерезис).
+  const SHOT_FLASH_MS = 160;
+  let shotFlashUntil = 0;
+
+  function setAim(ax, ay) {
     if (!Number.isFinite(ax) || !Number.isFinite(ay)) return;
-    const x = ax * CFG.field_width;
-    const y = ay * CFG.field_height;
+    const x = AIM_PAD + ax * (CFG.field_width  - AIM_PAD * 2);
+    const y = AIM_PAD + ay * (CFG.field_height - AIM_PAD * 2);
     currentAimPx = { x, y };
     // У #crosshair margin -17px, поэтому сдвигаем на половину его размера,
     // чтобы центр квадрата совпал с точкой прицела.
     crosshair.style.transform =
       `translate(${x - 17}px, ${y - 17}px)`;
-    crosshair.classList.toggle("fire", !!fire);
+    crosshair.classList.toggle("fire", performance.now() < shotFlashUntil);
+    crosshair.classList.remove("off");
 
     $("hud-x").textContent = Math.round(x);
     $("hud-y").textContent = Math.round(y);
+  }
+
+  // Нет лица в кадре — прицел некуда вести: ставим кубик в центр поля и гасим
+  // его, иначе он висит в левом верхнем углу и выглядит как поломка.
+  function centerCrosshair() {
+    const x = CFG.field_width / 2;
+    const y = CFG.field_height / 2;
+    currentAimPx = { x, y };
+    crosshair.style.transform = `translate(${x - 17}px, ${y - 17}px)`;
+    crosshair.classList.remove("fire");
+    crosshair.classList.add("off");
+    $("hud-x").textContent = "—";
+    $("hud-y").textContent = "—";
   }
 
   // ---------- State polling ----------
@@ -546,13 +640,35 @@
       $("s-ay").textContent = aimY.toFixed(3);
       $("s-ix").textContent = irisX.toFixed(3);
       $("s-iy").textContent = irisY.toFixed(3);
-      $("s-smile").textContent = (smileScore >= 0 ? "+" : "") + smileScore.toFixed(3);
-      $("s-mouth").textContent = mouthOpen.toFixed(3);
+      $("s-dx").textContent =
+        num(s.gaze_dx).toFixed(3) + " / " + num(s.gaze_dy).toFixed(3);
+      $("s-neutral").textContent = s.calibrating
+        ? "калибрую…"
+        : num(s.neutral_x).toFixed(3) + " / " + num(s.neutral_y).toFixed(3);
+      $("s-smile").textContent = smileScore.toFixed(2);
+      $("s-mouth").textContent = mouthOpen.toFixed(2);
+
+      // Диагностика камеры: сразу видно, кадры не идут или лица нет
+      $("s-camfps").textContent = num(s.fps).toFixed(1);
+      $("s-frames").textContent = String(num(s.frames_read));
+      $("s-face").textContent = s.face ? "есть" : "нет";
+      // Камера запущена, а кадров нет — пишем это прямо на чёрном превью
+      const noFrames = num(s.frames_read) === 0;
+      previewWrap.classList.toggle("err", cameraOn && noFrames);
+      const errEl = $("s-error");
+      errEl.textContent = s.error || "";
+      errEl.style.display = s.error ? "block" : "none";
 
       const fireEl = $("s-fire");
-      if (!s.camera) {
-        fireEl.textContent = "НЕТ КАМЕРЫ";
+      if (s.error) {
+        fireEl.textContent = "⚠ КАМЕРА";
+        fireEl.classList.add("fire");
+      } else if (!s.camera) {
+        fireEl.textContent = num(s.frames_read) > 0 ? "НЕТ ЛИЦА" : "НЕТ КАДРОВ";
         fireEl.classList.remove("fire");
+      } else if (s.mouth_open) {
+        fireEl.textContent = "🔴 DOUBLE";
+        fireEl.classList.add("fire");
       } else if (s.smile) {
         fireEl.textContent = "🔴 FIRE";
         fireEl.classList.add("fire");
@@ -562,16 +678,24 @@
       }
 
       if (s.camera) {
-        setAim(aimX, aimY, s.smile);
-
-        if (num(s.shot_id) > lastShotId) {
-          lastShotId = s.shot_id;
-          shotsCount++;
+        // Сначала считаем выстрел: кубик краснеет на сам выстрел, а не на
+        // удержание улыбки — в остальное время он всегда зелёный.
+        const delta = num(s.shot_id) - lastShotId;
+        if (delta > 0) {
+          lastShotId = num(s.shot_id);
+          shotsCount += delta;
+          shotFlashUntil = performance.now() + SHOT_FLASH_MS;
           $("s-shots").textContent = shotsCount;
           $("hud-shots").textContent = shotsCount;
-          spawnBullet(currentAimPx.x, currentAimPx.y);
+          for (let i = 0; i < Math.min(delta, 4); i++) {
+            const spread = delta > 1 ? (i - (delta - 1) / 2) * 12 : 0;
+            spawnBullet(currentAimPx.x + spread, currentAimPx.y);
+          }
           playBlaster();
         }
+        setAim(aimX, aimY);
+      } else {
+        centerCrosshair();
       }
     } catch (e) {
       // Тихо — сервер может перезапускаться
@@ -617,22 +741,43 @@
   btnStart.addEventListener("click", startCamera);
   btnStop .addEventListener("click", stopCamera);
 
+  // ---------- Calibration ----------
+  // Сервер усредняет следующие кадры и запоминает нейтраль взгляда, поэтому
+  // в момент нажатия надо смотреть в центр поля и не двигать глазами.
+  $("btn-calibrate").addEventListener("click", async () => {
+    try {
+      await fetch("/calibrate", { method: "POST" });
+      $("s-neutral").textContent = "калибрую…";
+    } catch (_) {}
+  });
+
+  $("btn-calibrate-reset").addEventListener("click", async () => {
+    try {
+      await fetch("/calibrate/reset", { method: "POST" });
+    } catch (_) {}
+    CFG.gaze_neutral_x = 0.0;
+    CFG.gaze_neutral_y = 0.0;
+  });
+
   // ---------- Sliders ----------
-  function bindSlider(id, key, fmt, applyFn) {
+  // sync = false для чисто клиентских настроек (громкость звука): таких ключей
+  // в config.py нет, сервер их молча игнорирует — значит, и слать незачем.
+  function bindSlider(id, key, applyFn, sync = true) {
     const input = $(id);
     const out   = $("v-" + id);
+    const fmt   = FMT[key] || String;
     const upd   = () => {
       const v = parseFloat(input.value);
       CFG[key] = v;
-      out.textContent = fmt ? fmt(v) : v;
-      pushConfig({ [key]: v });
+      out.textContent = fmt(v);
+      if (sync) pushConfig({ [key]: v });
       if (applyFn) applyFn(v);
     };
     input.addEventListener("input", upd);
     // Инициализация от сервера
     const initial = CFG[key];
     input.value = initial;
-    out.textContent = fmt ? fmt(initial) : initial;
+    out.textContent = fmt(initial);
     if (applyFn) applyFn(initial);
   }
 
@@ -658,13 +803,13 @@
   function loadConfigFromServer() {
     fetch("/config").then(r => r.json()).then(cfg => {
       Object.assign(CFG, cfg);
-      // Обновить UI
+      // Обновить UI теми же форматами, что и у слайдеров
       for (const key of Object.keys(cfg)) {
         const input = $(key);
         const out   = $("v-" + key);
         if (input && out) {
           input.value = cfg[key];
-          out.textContent = cfg[key];
+          out.textContent = (FMT[key] || String)(cfg[key]);
         }
       }
       fitField();
@@ -673,22 +818,23 @@
 
   // ---------- Bind all sliders ----------
   function initSliders() {
-    bindSlider("iris_gain",        "iris_gain");
-    bindSlider("head_gain",        "head_gain");
-    bindSlider("smoothing_alpha",  "smoothing_alpha", v => v.toFixed(2));
-    bindSlider("smile_threshold",  "smile_threshold", v => v.toFixed(3));
-    bindSlider("smile_hysteresis", "smile_hysteresis", v => v.toFixed(2));
-    bindSlider("fire_cooldown",    "fire_cooldown", v => v.toFixed(2));
-    bindSlider("bullet_speed",     "bullet_speed");
-    bindSlider("volume",           "volume", v => v.toFixed(2));
-    bindSlider("field_width",      "field_width", null, () => fitField());
-    bindSlider("field_height",     "field_height", null, () => fitField());
+    bindSlider("iris_gain",            "iris_gain");
+    bindSlider("iris_gain_y",          "iris_gain_y");
+    bindSlider("smoothing_alpha",      "smoothing_alpha");
+    bindSlider("smile_threshold",      "smile_threshold");
+    bindSlider("smile_hysteresis",     "smile_hysteresis");
+    bindSlider("mouth_open_threshold", "mouth_open_threshold");
+    bindSlider("bullet_speed",         "bullet_speed");
+    bindSlider("volume",               "volume", null, false);
+    bindSlider("field_width",          "field_width", () => fitField());
+    bindSlider("field_height",         "field_height", () => fitField());
   }
 
   // ---------- Boot ----------
   function boot() {
     initSliders();
     fitField();
+    centerCrosshair();
     loadConfigFromServer();
     renderLoop();
     pollState();

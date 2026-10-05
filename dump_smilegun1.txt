@@ -1,0 +1,1575 @@
+==============================================================================
+  PROJECT DUMP: smilegun
+  Path: D:\smilegun
+  Date: 2026-10-04T00:02:17
+  Files: 9
+==============================================================================
+
+--- ОГЛАВЛЕНИЕ ---
+   1. .gitignore
+   2. app.py
+   3. config.py
+   4. diagnostics.py
+   5. generate_sound.py
+   6. README.md
+   7. requirements.txt
+   8. run.ps1
+   9. templates/index.html
+
+
+==============================================================================
+### FILE 1/9: .gitignore
+### Size: 77 bytes | Lines: 9
+==============================================================================
+﻿.aider*
+.venv/
+__pycache__/
+*.pyc
+.acl-reports/
+__pycache__.7z
+*.log
+.env
+
+==============================================================================
+### FILE 2/9: app.py
+### Size: 19625 bytes | Lines: 484
+==============================================================================
+# smilegun/app.py
+from __future__ import annotations
+
+import os
+
+# --- Тишина в консоли ---------------------------------------------------
+# Переменные выставлены ДО импорта mediapipe: их читают TensorFlow Lite и
+# связанные с ним библиотеки только в момент инициализации. Основную работу
+# делает suppress_noise() ниже (он гасит строку на каждый HTTP-запрос).
+#
+# Проверено на mediapipe 0.10.21: эти переменные НЕ убирают строки
+# "INFO: Created TensorFlow Lite XNNPACK delegate for CPU." и "W0000 ...
+# inference_feedback_manager.cc" — их пишет C++ напрямую в stderr, минуя
+# логирование Python. Оставляем как безвредную страховку для других сборок:
+# на некоторых версиях TensorFlow они действительно глушат INFO/WARNING.
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")   # только фатальные
+os.environ.setdefault("GLOG_minloglevel", "2")
+os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
+
+import threading
+import time
+from pathlib import Path
+
+import cv2
+import mediapipe as mp
+import numpy as np
+from flask import Flask, jsonify, render_template, Response, request
+
+from config import CFG
+from diagnostics import print_report, suppress_noise
+
+# --- Диагностика ДО всех тяжёлых операций -------------------------------
+suppress_noise()   # первым делом: гасим служебный шум Flask/werkzeug
+print_report()
+
+BASE_DIR = Path(__file__).resolve().parent
+app = Flask(__name__)
+
+# --- Landmark IDs (MediaPipe FaceMesh, refine_landmarks=True) ----------
+LEFT_IRIS_CENTER = 468
+RIGHT_IRIS_CENTER = 473
+# Уголки глаз нужны, чтобы нормировать ход зрачка на ширину глаза:
+# без этого смещение зрачка зависит от дистанции до камеры.
+LEFT_EYE_OUTER = 33
+LEFT_EYE_INNER = 133
+RIGHT_EYE_INNER = 362
+RIGHT_EYE_OUTER = 263
+NOSE_TIP = 1
+LEFT_CHEEK = 234
+RIGHT_CHEEK = 454
+LEFT_MOUTH = 61
+RIGHT_MOUTH = 291
+TOP_LIP = 13
+BOTTOM_LIP = 14
+
+# Ниже этого не опускаем нормировку: при моргании/полуприкрытых глазах
+# ширина глаза в кадре становится крошечной и усиление улетает в шум.
+MIN_EYE_WIDTH = 0.012
+
+# Прицел живёт в нормализованных координатах поля 0..1.
+FIELD_CENTER = 0.5
+
+
+def clamp01(v: float) -> float:
+    return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
+
+
+def deadzone(v: float, dz: float) -> float:
+    """Мёртвая зона без скачка на границе: за зоной ход остаётся линейным."""
+    if dz <= 0.0 or abs(v) <= dz:
+        return 0.0
+    return v - dz if v > 0.0 else v + dz
+
+
+class EMA:
+    """Экспоненциальное сглаживание — стабильнее и быстрее, чем deque-average."""
+    __slots__ = ("alpha", "value")
+
+    def __init__(self, alpha: float = 0.3):
+        self.alpha = alpha
+        self.value: float | None = None
+
+    def update(self, x: float) -> float:
+        if self.value is None:
+            self.value = x
+        else:
+            self.value = self.alpha * x + (1.0 - self.alpha) * self.value
+        return self.value
+
+    def reset(self):
+        self.value = None
+
+
+def measure(lm) -> dict:
+    """Сырые измерения кадра: поза головы и взгляд (без сглаживания).
+
+    Возвращает нормализованные координаты кадра (голова, зрачки) и взгляд
+    в единицах ширины глаза. Вынесено отдельно, чтобы формулу можно было
+    проверять без камеры и MediaPipe.
+    """
+    # Голова: середина между щеками; по вертикали чуть подмешиваем нос —
+    # он не так сильно реагирует на открывание рта, как линия щёк.
+    head_x = (lm[LEFT_CHEEK].x + lm[RIGHT_CHEEK].x) * 0.5
+    head_y = (0.8 * (lm[LEFT_CHEEK].y + lm[RIGHT_CHEEK].y) * 0.5
+              + 0.2 * lm[NOSE_TIP].y)
+
+    iris_x = (lm[LEFT_IRIS_CENTER].x + lm[RIGHT_IRIS_CENTER].x) * 0.5
+    iris_y = (lm[LEFT_IRIS_CENTER].y + lm[RIGHT_IRIS_CENTER].y) * 0.5
+
+    # Взгляд считается от центра глаза, а не от центра лица: расстояние
+    # "зрачок минус середина щёк" почти не меняется при движении взгляда,
+    # поэтому раньше зрачки не управляли прицелом. Нормируем на ширину
+    # глаза, чтобы амплитуда не зависела от дистанции до камеры.
+    eye_cx = (lm[LEFT_EYE_OUTER].x + lm[LEFT_EYE_INNER].x
+              + lm[RIGHT_EYE_INNER].x + lm[RIGHT_EYE_OUTER].x) * 0.25
+    eye_cy = (lm[LEFT_EYE_OUTER].y + lm[LEFT_EYE_INNER].y
+              + lm[RIGHT_EYE_INNER].y + lm[RIGHT_EYE_OUTER].y) * 0.25
+    eye_w = max(abs(lm[LEFT_EYE_INNER].x - lm[LEFT_EYE_OUTER].x),
+                abs(lm[RIGHT_EYE_OUTER].x - lm[RIGHT_EYE_INNER].x),
+                MIN_EYE_WIDTH)
+
+    gaze_x = deadzone((iris_x - eye_cx) / eye_w, CFG.eye_deadzone)
+    gaze_y = deadzone((iris_y - eye_cy) / eye_w, CFG.eye_deadzone)
+
+    return {
+        "head_x": head_x, "head_y": head_y,
+        "iris_x": iris_x, "iris_y": iris_y,
+        "gaze_x": gaze_x, "gaze_y": gaze_y,
+    }
+
+
+def hybrid_aim(head_x: float, head_y: float, gaze_x: float, gaze_y: float,
+               neutral_x: float, neutral_y: float) -> tuple[float, float]:
+    """Гибридный прицел: смещение головы от нейтрали + взгляд.
+
+    Считаем смещение от центра поля, а не абсолютную координату в кадре.
+    Раньше было raw_ax = head_x * head_gain + ..., то есть уже ~0.5 при
+    взгляде прямо: вместе с добавкой от зрачков значение сразу уходило за
+    1.0, и прицел залипал на краю поля.
+
+    Взгляд и голова складываются как два слагаемых одного смещения,
+    поэтому центр поля (0.5, 0.5) соответствует нейтральной позе.
+    """
+    offset_x = ((head_x - neutral_x) * CFG.head_gain
+                + gaze_x * CFG.iris_gain)
+    offset_y = ((head_y - neutral_y) * CFG.head_gain * CFG.head_gain_y
+                + gaze_y * CFG.iris_gain * CFG.iris_gain_y)
+    return clamp01(FIELD_CENTER + offset_x), clamp01(FIELD_CENTER + offset_y)
+
+
+class CameraTracker:
+    def __init__(self):
+        self.cap: cv2.VideoCapture | None = None
+        self.lock = threading.Lock()
+        self.running = False
+        self.thread: threading.Thread | None = None
+
+        self.frame: bytes | None = None
+
+        # Aim (нормализованные координаты поля 0..1)
+        self.aim_x = 0.5
+        self.aim_y = 0.5
+
+        # Зрачки (нормализованные координаты кадра 0..1, для отладки)
+        self.iris_x = 0.5
+        self.iris_y = 0.5
+        # Голова
+        self.head_x = 0.5
+        self.head_y = 0.5
+
+        # Нейтраль головы: позиция, в которой прицел стоит в центре поля.
+        # Медленно подстраивается под сидящего перед камерой человека.
+        self.neutral_x = 0.5
+        self.neutral_y = 0.5
+        # Нормированный взгляд (в единицах ширины глаза) и его сглаженная версия
+        self.gaze_x = 0.0
+        self.gaze_y = 0.0
+
+        # Улыбка
+        self.smile_score = 0.0
+        self.mouth_open_score = 0.0
+        self.smile = False
+
+        # Счётчик выстрелов (edge-триггер)
+        self.shot_id = 0
+        self.last_shot = 0.0
+        self._smile_state = False
+
+        # Сглаживание
+        self.ema_ax = EMA(CFG.smoothing_alpha)
+        self.ema_ay = EMA(CFG.smoothing_alpha)
+        # Взгляд сглаживаем мягче: после нормировки на ширину глаза его
+        # собственный шум MediaPipe усиливается сильнее, чем шум головы.
+        self.ema_gx = EMA(CFG.smoothing_alpha * 0.6)
+        self.ema_gy = EMA(CFG.smoothing_alpha * 0.6)
+
+        self.face_mesh = self._make_mesh()
+
+    @staticmethod
+    def _make_mesh():
+        return mp.solutions.face_mesh.FaceMesh(
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+
+    # ---------------- lifecycle ----------------
+    def start(self):
+        with self.lock:
+            if self.running:
+                return
+            cap = cv2.VideoCapture(CFG.camera_index, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(CFG.camera_index)
+            if not cap.isOpened():
+                raise RuntimeError("Не удалось открыть камеру")
+
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, CFG.camera_width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CFG.camera_height)
+            cap.set(cv2.CAP_PROP_FPS, CFG.camera_fps)
+
+            # Warm-up: DSHOW часто отдаёт чёрные первые кадры.
+            for _ in range(5):
+                cap.read()
+                time.sleep(0.03)
+
+            self.cap = cap
+            self.face_mesh = self._make_mesh()
+            self.ema_ax.reset()
+            self.ema_ay.reset()
+            self.ema_gx.reset()
+            self.ema_gy.reset()
+            self.neutral_x = 0.5
+            self.neutral_y = 0.5
+            self.gaze_x = 0.0
+            self.gaze_y = 0.0
+            self.running = True
+            self.thread = threading.Thread(target=self._loop, daemon=True)
+            self.thread.start()
+
+    def stop(self):
+        with self.lock:
+            self.running = False
+            cap = self.cap
+            self.cap = None
+        if cap is not None:
+            cap.release()
+
+    # ---------------- main loop ----------------
+    def _loop(self):
+        while self.running:
+            cap = self.cap
+            if cap is None:
+                time.sleep(0.02)
+                continue
+
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                time.sleep(0.02)
+                continue
+
+            # Зеркалим — глаз естественнее управляет "как в зеркале".
+            frame = cv2.flip(frame, 1)
+            h, w = frame.shape[:2]
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            try:
+                result = self.face_mesh.process(rgb)
+            except Exception as e:
+                # Не роняем поток из-за MediaPipe
+                print(f"[tracker] face_mesh error: {e}")
+                result = None
+
+            now = time.monotonic()
+            face_found = bool(result and result.multi_face_landmarks)
+            smile_now = False
+
+            if face_found:
+                lm = result.multi_face_landmarks[0].landmark
+
+                m = measure(lm)
+                head_x, head_y = m["head_x"], m["head_y"]
+                iris_x, iris_y = m["iris_x"], m["iris_y"]
+
+                gx = self.ema_gx.update(m["gaze_x"])
+                gy = self.ema_gy.update(m["gaze_y"])
+
+                # ---- Автоподстройка нейтрали головы ----
+                # Центр поля должен соответствовать естественной позе человека,
+                # а не геометрическому центру кадра (0.5, 0.5): иначе остаётся
+                # постоянный сдвиг. Двигаем нейтраль, только когда взгляд
+                # спокоен и голова стоит близко к текущей нейтрали.
+                rate = CFG.head_recenter_rate
+                if rate > 0.0:
+                    tol = CFG.head_recenter_tol
+                    if abs(gx) < tol and abs(gy) < tol:
+                        if abs(head_x - self.neutral_x) < 0.15:
+                            self.neutral_x += rate * (head_x - self.neutral_x)
+                        if abs(head_y - self.neutral_y) < 0.15:
+                            self.neutral_y += rate * (head_y - self.neutral_y)
+                self.neutral_x = min(0.75, max(0.25, self.neutral_x))
+                self.neutral_y = min(0.75, max(0.25, self.neutral_y))
+
+                raw_ax, raw_ay = hybrid_aim(head_x, head_y, gx, gy,
+                                            self.neutral_x, self.neutral_y)
+
+                with self.lock:
+                    self.aim_x = self.ema_ax.update(raw_ax)
+                    self.aim_y = self.ema_ay.update(raw_ay)
+                    self.iris_x, self.iris_y = iris_x, iris_y
+                    self.head_x, self.head_y = head_x, head_y
+                    self.gaze_x, self.gaze_y = gx, gy
+
+                # ---- Улыбка ----
+                # width растёт при улыбке, height растёт при открытии рта.
+                # Нормализуем на ширину лица, чтобы не зависеть от дистанции.
+                face_width = abs(lm[RIGHT_CHEEK].x - lm[LEFT_CHEEK].x) + 1e-6
+                mouth_w = abs(lm[RIGHT_MOUTH].x - lm[LEFT_MOUTH].x) / face_width
+                mouth_h = abs(lm[BOTTOM_LIP].y - lm[TOP_LIP].y) / face_width
+
+                # smile = растяжение минус штраф за открытие
+                smile_score = mouth_w - 1.3 * mouth_h
+
+                with self.lock:
+                    self.smile_score = smile_score
+                    self.mouth_open_score = mouth_h
+
+                # Порог + гистерезис
+                th_hi = CFG.smile_threshold
+                th_lo = th_hi * CFG.smile_hysteresis
+                with self.lock:
+                    if not self._smile_state and smile_score > th_hi:
+                        self._smile_state = True
+                    elif self._smile_state and smile_score < th_lo:
+                        self._smile_state = False
+                    smile_now = self._smile_state
+
+                # ---- Отрисовка ----
+                for idx, color in (
+                    (LEFT_IRIS_CENTER, (0, 255, 255)),
+                    (RIGHT_IRIS_CENTER, (0, 255, 255)),
+                    (LEFT_MOUTH, (255, 180, 0)),
+                    (RIGHT_MOUTH, (255, 180, 0)),
+                ):
+                    px = int(lm[idx].x * w)
+                    py = int(lm[idx].y * h)
+                    cv2.circle(frame, (px, py), 4, color, -1)
+
+                # Крестик прицела на превью
+                ax = int(self.aim_x * w)
+                ay = int(self.aim_y * h)
+                cv2.drawMarker(frame, (ax, ay), (0, 0, 255),
+                               cv2.MARKER_CROSS, 20, 2)
+
+            # ---- Выстрел: edge + cooldown ----
+            if smile_now and not self.smile and (now - self.last_shot) > CFG.fire_cooldown:
+                self.shot_id += 1
+                self.last_shot = now
+
+            self.smile = smile_now
+
+            # HUD
+            cv2.putText(frame,
+                        f"aim {self.aim_x:.2f},{self.aim_y:.2f}  "
+                        f"head {self.head_x:.2f},{self.head_y:.2f}  "
+                        f"gaze {self.gaze_x:+.2f},{self.gaze_y:+.2f}  "
+                        f"smile {self.smile_score:+.2f}",
+                        (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, "FIRE!" if self.smile else "READY",
+                        (12, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (0, 80, 255) if self.smile else (0, 220, 80),
+                        2, cv2.LINE_AA)
+
+            ok, encoded = cv2.imencode(".jpg", frame,
+                                       [cv2.IMWRITE_JPEG_QUALITY, 82])
+            if ok:
+                with self.lock:
+                    self.frame = encoded.tobytes()
+
+    # ---------------- accessors ----------------
+    def get_frame(self):
+        with self.lock:
+            return self.frame
+
+    def get_state(self):
+        with self.lock:
+            return {
+                "aim_x": self.aim_x,
+                "aim_y": self.aim_y,
+                "iris_x": self.iris_x,
+                "iris_y": self.iris_y,
+                "head_x": self.head_x,
+                "head_y": self.head_y,
+                "gaze_x": self.gaze_x,
+                "gaze_y": self.gaze_y,
+                "neutral_x": self.neutral_x,
+                "neutral_y": self.neutral_y,
+                "smile": self.smile,
+                "smile_score": self.smile_score,
+                "mouth_open_score": self.mouth_open_score,
+                "shot_id": self.shot_id,
+                "camera": self.running,
+            }
+
+
+tracker = CameraTracker()
+
+
+def mjpeg_stream():
+    boundary = b"--frame\r\n"
+    while True:
+        frame = tracker.get_frame()
+        if frame:
+            yield (boundary
+                   + b"Content-Type: image/jpeg\r\n\r\n"
+                   + frame + b"\r\n")
+        else:
+            time.sleep(0.03)
+
+
+# ---------------- routes ----------------
+@app.get("/")
+def index():
+    return render_template("index.html")
+
+
+@app.get("/video_feed")
+def video_feed():
+    return Response(mjpeg_stream(),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/state")
+def state():
+    return jsonify(tracker.get_state())
+
+
+@app.get("/config")
+def get_config():
+    return jsonify(CFG.as_dict())
+
+
+@app.post("/config")
+def set_config():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        CFG.update(**data)
+        # применяем alpha к существующим EMA
+        tracker.ema_ax.alpha = CFG.smoothing_alpha
+        tracker.ema_ay.alpha = CFG.smoothing_alpha
+        tracker.ema_gx.alpha = CFG.smoothing_alpha * 0.6
+        tracker.ema_gy.alpha = CFG.smoothing_alpha * 0.6
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, "config": CFG.as_dict()})
+
+
+@app.post("/camera/start")
+def camera_start():
+    try:
+        tracker.start()
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True})
+
+
+@app.post("/camera/stop")
+def camera_stop():
+    tracker.stop()
+    return jsonify({"ok": True})
+
+
+if __name__ == "__main__":
+    try:
+        tracker.start()
+    except Exception as e:
+        print(f"[!] Камера не запущена автоматически: {e}")
+    try:
+        app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
+    finally:
+        tracker.stop()
+
+==============================================================================
+### FILE 3/9: config.py
+### Size: 2483 bytes | Lines: 53
+==============================================================================
+# smilegun/config.py
+from dataclasses import dataclass, asdict
+
+@dataclass
+class Config:
+    # Поле
+    field_width: int = 900
+    field_height: int = 950
+
+    # Управление взглядом
+    # head_gain масштабирует СМЕЩЕНИЕ головы от нейтрали (а не абсолютную
+    # позицию в кадре): нейтраль = центр поля. Комфортный поворот головы
+    # смещает центр лица примерно на ±0.06 кадра -> ±0.09 поля.
+    head_gain: float = 1.5
+    head_gain_y: float = 1.0        # отдельный множитель по вертикали (кивок)
+
+    # iris_gain масштабирует взгляд. Взгляд измеряется в ширинах глаза:
+    # спокойный перевод взгляда в угол экрана — это примерно ±0.3 ширины
+    # глаза, то есть при iris_gain 2.6 прицел проходит ±0.8 поля.
+    # Много не ставь: зрачок ходит мало, и большой множитель сразу упирает
+    # прицел в край поля.
+    iris_gain: float = 2.6
+    iris_gain_y: float = 1.6        # взгляд по вертикали ходит меньше
+
+    eye_deadzone: float = 0.03          # мёртвая зона взгляда (доля ширины глаза)
+    head_recenter_rate: float = 0.006   # авто-подстройка нейтрали головы (0 = выкл.)
+    head_recenter_tol: float = 0.004    # насколько спокойным должен быть взгляд
+    smoothing_alpha: float = 0.30   # EMA (0..1, меньше = плавнее)
+
+    # Улыбка
+    smile_threshold: float = 0.10   # порог smile_score
+    smile_hysteresis: float = 0.65  # отпускание порога (0.65 = 65% от threshold)
+
+    # Игра
+    fire_cooldown: float = 0.20     # сек между выстрелами
+    bullet_speed: float = 9.0       # пикс/кадр
+
+    # Камера
+    camera_index: int = 0
+    camera_width: int = 640
+    camera_height: int = 480
+    camera_fps: int = 30
+
+    def update(self, **kwargs):
+        for k, v in kwargs.items():
+            if hasattr(self, k):
+                setattr(self, k, type(getattr(self, k))(v))
+        return asdict(self)
+
+    def as_dict(self):
+        return asdict(self)
+
+CFG = Config()
+
+==============================================================================
+### FILE 4/9: diagnostics.py
+### Size: 5116 bytes | Lines: 130
+==============================================================================
+# smilegun/diagnostics.py
+from __future__ import annotations
+import sys
+import os
+import logging
+import importlib
+import traceback
+
+# Переменные TF_CPP_MIN_LOG_LEVEL / GLOG_minloglevel / ABSL_MIN_LOG_LEVEL
+# выставляются в app.py до импорта mediapipe — здесь они уже бесполезны,
+# потому что TensorFlow Lite читает их один раз при инициализации.
+
+REQUIRED = [
+    ("flask", "flask"),
+    ("cv2", "opencv-python"),
+    ("mediapipe", "mediapipe"),
+    ("numpy", "numpy"),
+]
+
+OPTIONAL = [
+    ("scipy", "scipy"),
+    ("lameenc", "lameenc"),
+]
+
+
+def check_environment(verbose: bool = True) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warns: list[str] = []
+
+    if sys.version_info < (3, 9):
+        errors.append(f"Нужен Python >= 3.9, у тебя {sys.version.split()[0]}")
+
+    for mod, pkg in REQUIRED:
+        try:
+            importlib.import_module(mod)
+        except Exception as e:
+            errors.append(f"Импорт '{mod}' провалился: {e}. Установи: uv pip install {pkg}")
+
+    for mod, pkg in OPTIONAL:
+        try:
+            importlib.import_module(mod)
+        except Exception:
+            warns.append(f"Опциональный модуль '{mod}' отсутствует (uv pip install {pkg})")
+
+    # MediaPipe API
+    try:
+        import mediapipe as mp
+        version = getattr(mp, "__version__", "?")
+        if not hasattr(mp, "solutions"):
+            errors.append(
+                f"mediapipe {version} без mp.solutions. "
+                f"Откатись: uv pip install 'mediapipe==0.10.21'"
+            )
+    except Exception as e:
+        errors.append(f"mediapipe сломан: {e}")
+
+    # Камера. Пробу открытия можно отключить (SMILEGUN_SKIP_CAMERA=1), чтобы
+    # прогнать математику или тесты там, где камеры заведомо нет.
+    if os.environ.get("SMILEGUN_SKIP_CAMERA") == "1":
+        warns.append("Проверка камеры пропущена (SMILEGUN_SKIP_CAMERA=1)")
+    else:
+        try:
+            import cv2
+            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(0)
+            ok = cap.isOpened()
+            cap.release()
+            if not ok:
+                errors.append("Камера 0 не открывается. Занята другим приложением?")
+        except Exception as e:
+            warns.append(f"Проверка камеры: {e}")
+
+    # Звук
+    from pathlib import Path
+    sound = Path(__file__).parent / "static" / "blaster.mp3"
+    if not sound.exists():
+        warns.append(f"{sound} не найден — запусти generate_sound.py (иначе выстрел без звука)")
+
+    return errors, warns
+
+
+def suppress_noise(level: str = "WARNING") -> None:
+    """Гасит служебный шум в консоли, оставляя ошибки.
+
+    Главный источник — строка вида
+    `127.0.0.1 - - [дата] "GET /state HTTP/1.1" 200 -`:
+    браузер опрашивает /state каждый кадр анимации, и такая строка летит
+    десятки раз в секунду. Ошибки (5xx, падения, предупреждения) остаются
+    видны. Вернуть подробные логи: SMILEGUN_VERBOSE=1 при запуске.
+    """
+    log_level = logging.DEBUG if os.environ.get("SMILEGUN_VERBOSE") == "1" \
+        else getattr(logging, level, logging.WARNING)
+
+    # werkzeug пишет по строке на каждый HTTP-запрос
+    for name in ("werkzeug", "werkzeug.serving", "werkzeug._internal"):
+        logging.getLogger(name).setLevel(log_level)
+
+    # баннеры "Serving Flask app" / "Debug mode"
+    try:
+        from flask import cli
+        cli.show_server_banner = lambda *a, **k: None
+    except Exception:
+        pass
+
+    # Свой логгер Flask не трогаем: сообщения уровня ERROR он пропускает
+    # через lastResort-обработчик, поэтому ошибки остаются видимыми.
+
+
+def print_report():
+    errors, warns = check_environment()
+    lines = ["=" * 60, "  DIAGNOSTICS — smilegun", "=" * 60]
+    lines += [f"  [!] {w}" for w in warns]
+    lines += [f"  [X] {e}" for e in errors]
+    if not errors and not warns:
+        lines.append("  [OK] Всё чисто.")
+    lines.append("=" * 60)
+    if errors:
+        lines.append("Запуск прерван из-за критических ошибок.")
+    print("\n".join(lines))
+    # Без сброса буфера отчёт остаётся невидимым, пока stdout перенаправлен
+    # в файл/IDE: Python буферизует его блоками, а не строками.
+    sys.stdout.flush()
+    if errors:
+        sys.exit(1)
+    print()
+
+
+if __name__ == "__main__":
+    print_report()
+
+==============================================================================
+### FILE 5/9: generate_sound.py
+### Size: 1982 bytes | Lines: 71
+==============================================================================
+from __future__ import annotations
+
+import subprocess
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from scipy.io import wavfile
+from scipy.signal import butter, sosfilt
+
+SR = 44100
+ROOT = Path(__file__).resolve().parent
+OUT = ROOT / 'static' / 'blaster.mp3'
+
+
+def lowpass(x: np.ndarray, cutoff: float) -> np.ndarray:
+    sos = butter(4, cutoff, btype='low', fs=SR, output='sos')
+    return sosfilt(sos, x)
+
+
+def blaster(duration=0.42, f_start=2450.0, f_end=95.0):
+    n = int(SR * duration)
+    t = np.arange(n) / SR
+    # Exponential frequency fall: sharp sci-fi "pew".
+    k = np.log(f_start / f_end) / duration
+    freq = f_start * np.exp(-k * t)
+    phase = 2 * np.pi * np.cumsum(freq) / SR
+
+    core = 0.72 * np.sin(phase)
+    core += 0.20 * np.sin(phase * 1.018 + 0.35)
+    core += 0.08 * np.sin(phase * 0.51)
+
+    # Short click/impact at the muzzle.
+    click = np.random.default_rng(7).normal(0, 1, n)
+    click = lowpass(click, 8500)
+    click *= np.exp(-t * 45)
+
+    # Metallic tail.
+    grit = np.random.default_rng(9).normal(0, 1, n)
+    grit = lowpass(grit, 4200)
+    grit *= np.exp(-t * 14)
+
+    env = np.exp(-t * 8.8)
+    attack = min(int(SR * 0.0025), n)
+    env[:attack] *= np.linspace(0, 1, attack)
+
+    signal = core * env + 0.18 * click + 0.10 * grit
+    signal = np.tanh(signal * 1.8)
+    signal = lowpass(signal, 11500)
+    peak = np.max(np.abs(signal))
+    if peak:
+        signal = signal / peak * 0.88
+    return signal.astype(np.float32)
+
+
+def main():
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    signal = blaster()
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / 'blaster.wav'
+        wavfile.write(wav, SR, (signal * 32767).astype(np.int16))
+        subprocess.run([
+            'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+            '-i', str(wav), '-codec:a', 'libmp3lame', '-b:a', '192k', str(OUT)
+        ], check=True)
+    print(f'Generated: {OUT}')
+
+
+if __name__ == '__main__':
+    main()
+
+==============================================================================
+### FILE 6/9: README.md
+### Size: 1417 bytes | Lines: 30
+==============================================================================
+# SmileGun
+
+Небольшая веб-игра на Python: веб-камера отслеживает радужки/зрачки и улыбку, положение взгляда управляет зеленым квадратом, а улыбка вызывает выстрел.
+
+## Требования
+
+Windows + `uv` + Python 3.12. На Windows сначала убедись, что есть `ffmpeg` в PATH:
+
+```powershell
+winget install Gyan.FFmpeg
+```
+
+## Запуск
+
+```powershell
+cd smilegun
+powershell -ExecutionPolicy Bypass -File .\run.ps1
+```
+
+Открой `http://127.0.0.1:5000` и нажми **ЗАПУСТИТЬ КАМЕРУ + ИГРУ**.
+
+## Как это работает
+
+- Камера: OpenCV, 640×480.
+- Лицо/радужки/улыбка: MediaPipe Face Mesh с `refine_landmarks=True`.
+- Взгляд сглаживается по 7 последним измерениям.
+- Игровое поле рисуется браузером на Canvas 900×950, поэтому оно не зависит от частоты JPEG-потока камеры.
+- Улыбка срабатывает по переходу через порог и имеет короткий cooldown, чтобы удерживание улыбки не создавало пулемёт.
+- `static/blaster.mp3` генерируется локально из синтезированного сигнала.
+
+==============================================================================
+### FILE 7/9: requirements.txt
+### Size: 95 bytes | Lines: 6
+==============================================================================
+Flask>=3.1,<4
+numpy>=1.26,<2
+scipy>=1.13,<1.17
+opencv-python>=4.10,<5
+mediapipe>=0.10.20,<0.11
+
+==============================================================================
+### FILE 8/9: run.ps1
+### Size: 700 bytes | Lines: 22
+==============================================================================
+$ErrorActionPreference = 'Stop'
+Set-Location $PSScriptRoot
+
+# Без этого Python буферизует вывод блоками, и отчёт диагностики появляется
+# в консоли IDE с задержкой (или не появляется до остановки процесса).
+$env:PYTHONUNBUFFERED = '1'
+
+if (-not (Test-Path '.venv')) {
+    uv venv --python 3.12
+}
+
+uv pip install -r requirements.txt
+
+if (-not (Test-Path 'static\blaster.mp3')) {
+    uv run python generate_sound.py
+}
+
+Write-Host ''
+Write-Host 'SmileGun: http://127.0.0.1:5000' -ForegroundColor Green
+Write-Host 'Для остановки: Ctrl+C' -ForegroundColor Yellow
+uv run python app.py
+
+==============================================================================
+### FILE 9/9: templates/index.html
+### Size: 22591 bytes | Lines: 708
+==============================================================================
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>smilegun — глазной тир</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #2ea043;
+    --red: #f85149;
+    --yellow: #d29922;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  #app {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    height: 100vh;
+  }
+  /* ---------- Sidebar ---------- */
+  #sidebar {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  #sidebar h1 {
+    font-size: 18px;
+    margin: 0 0 4px;
+    letter-spacing: 0.5px;
+  }
+  #sidebar h1 span { color: var(--accent); }
+  .preview-wrap {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #000;
+    aspect-ratio: 4 / 3;
+  }
+  #preview {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .preview-wrap.off::after {
+    content: "КАМЕРА ВЫКЛЮЧЕНА";
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 13px;
+    letter-spacing: 2px;
+    background: rgba(0,0,0,0.7);
+  }
+  .btn-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  button {
+    background: #21262d;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover:not(:disabled) {
+    background: #30363d;
+    border-color: #484f58;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.primary {
+    background: var(--green);
+    border-color: var(--green);
+    color: #fff;
+    font-weight: 600;
+    grid-column: 1 / -1;
+  }
+  button.primary:hover:not(:disabled) { background: #3fb950; }
+  button.danger {
+    background: #4d1f1f;
+    border-color: #6e2828;
+    color: #ffb3b3;
+    grid-column: 1 / -1;
+  }
+  button.danger:hover:not(:disabled) { background: #6e2828; }
+
+  .stats {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 12px;
+    font-size: 12px;
+    font-family: "Consolas", "Menlo", monospace;
+    padding: 10px 12px;
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .stats .k { color: var(--muted); }
+  .stats .v { color: var(--text); text-align: right; }
+  .stats .v.fire { color: var(--red); font-weight: 700; }
+
+  details {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0;
+    overflow: hidden;
+  }
+  details > summary {
+    padding: 10px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    background: #0d1117;
+    list-style: none;
+    user-select: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before {
+    content: "▸ ";
+    color: var(--muted);
+    display: inline-block;
+    transition: transform 0.15s;
+  }
+  details[open] > summary::before { content: "▾ "; }
+  details .body { padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+
+  .slider {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .slider .label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .slider .label b { color: var(--text); font-weight: 600; font-family: monospace; }
+  .slider input[type=range] {
+    width: 100%;
+    accent-color: var(--accent);
+  }
+  .hint {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .hint kbd {
+    background: #21262d;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: monospace;
+    font-size: 10px;
+  }
+
+  /* ---------- Game field ---------- */
+  #field-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding: 20px;
+  }
+  #field {
+    position: relative;
+    background:
+      radial-gradient(circle at 50% 50%, rgba(88,166,255,0.06), transparent 60%),
+      repeating-linear-gradient(0deg, #0a0d12 0 1px, transparent 1px 40px),
+      repeating-linear-gradient(90deg, #0a0d12 0 1px, transparent 1px 40px),
+      #05070a;
+    border: 2px solid #fff;
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.15),
+      0 0 40px rgba(88,166,255,0.15),
+      inset 0 0 60px rgba(0,0,0,0.8);
+    transform-origin: center center;
+  }
+  #crosshair {
+    position: absolute;
+    width: 34px;
+    height: 34px;
+    margin-left: -17px;
+    margin-top: -17px;
+    background: var(--green);
+    box-shadow:
+      0 0 12px rgba(46,160,67,0.9),
+      0 0 30px rgba(46,160,67,0.5);
+    border-radius: 3px;
+    pointer-events: none;
+    transition: background 0.06s, box-shadow 0.06s;
+    will-change: transform, background;
+  }
+  #crosshair.fire {
+    background: var(--red);
+    box-shadow:
+      0 0 14px rgba(248,81,73,1),
+      0 0 40px rgba(248,81,73,0.7);
+  }
+  .bullet {
+    position: absolute;
+    width: 4px;
+    height: 14px;
+    margin-left: -2px;
+    margin-top: -7px;
+    background: #ffd24a;
+    border-radius: 2px;
+    box-shadow: 0 0 10px #ffd24a, 0 0 20px rgba(255,210,74,0.6);
+    pointer-events: none;
+    will-change: transform;
+  }
+  .hit {
+    position: absolute;
+    width: 60px;
+    height: 60px;
+    margin-left: -30px;
+    margin-top: -30px;
+    border: 2px solid #ffd24a;
+    border-radius: 50%;
+    pointer-events: none;
+    animation: hit-pop 0.4s ease-out forwards;
+  }
+  @keyframes hit-pop {
+    from { transform: scale(0.3); opacity: 1; }
+    to   { transform: scale(1.6); opacity: 0; }
+  }
+  #hud {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    font-family: monospace;
+    font-size: 14px;
+    color: #fff;
+    text-shadow: 0 0 6px rgba(0,0,0,0.9);
+    pointer-events: none;
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ======================= SIDEBAR ======================= -->
+  <aside id="sidebar">
+    <h1>SMILE<span>·</span>GUN</h1>
+
+    <div class="preview-wrap off" id="preview-wrap">
+      <img id="preview" alt="camera preview">
+    </div>
+
+    <div class="btn-row">
+      <button id="btn-start" class="primary">▶ ЗАПУСТИТЬ КАМЕРУ</button>
+      <button id="btn-stop" class="danger" disabled>■ ОСТАНОВИТЬ</button>
+    </div>
+
+    <div class="stats">
+      <div class="k">FPS</div>            <div class="v" id="s-fps">—</div>
+      <div class="k">Прицел X</div>       <div class="v" id="s-ax">—</div>
+      <div class="k">Прицел Y</div>       <div class="v" id="s-ay">—</div>
+      <div class="k">Зрачок X</div>       <div class="v" id="s-ix">—</div>
+      <div class="k">Зрачок Y</div>       <div class="v" id="s-iy">—</div>
+      <div class="k">Улыбка</div>         <div class="v" id="s-smile">—</div>
+      <div class="k">Рот открыт</div>     <div class="v" id="s-mouth">—</div>
+      <div class="k">Состояние</div>      <div class="v" id="s-fire">—</div>
+      <div class="k">Выстрелов</div>      <div class="v" id="s-shots">0</div>
+    </div>
+
+    <details open>
+      <summary>Настройки управления</summary>
+      <div class="body">
+        <div class="slider">
+          <div class="label"><span>Усиление зрачков</span><b id="v-iris_gain">2.6</b></div>
+          <input type="range" id="iris_gain" min="0.5" max="8" step="0.1" value="2.6">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Вклад головы</span><b id="v-head_gain">1.5</b></div>
+          <input type="range" id="head_gain" min="0" max="4" step="0.1" value="1.5">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Сглаживание (меньше = плавнее)</span><b id="v-smoothing_alpha">0.30</b></div>
+          <input type="range" id="smoothing_alpha" min="0.05" max="1" step="0.01" value="0.30">
+        </div>
+        <div class="hint">
+          Если прицел <b>дёргается</b> — уменьши сглаживание.<br>
+          Если <b>не достаёт до краёв</b> — увеличь усиление.<br>
+          Центр поля прицел находит сам: подержи взгляд в центре пару
+          секунд — нейтраль головы подстроится под твою посадку.
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Настройки улыбки</summary>
+      <div class="body">
+        <div class="slider">
+          <div class="label"><span>Порог улыбки</span><b id="v-smile_threshold">0.10</b></div>
+          <input type="range" id="smile_threshold" min="0.0" max="0.4" step="0.005" value="0.10">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Гистерезис</span><b id="v-smile_hysteresis">0.65</b></div>
+          <input type="range" id="smile_hysteresis" min="0.3" max="1" step="0.05" value="0.65">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Кулдаун выстрела, сек</span><b id="v-fire_cooldown">0.20</b></div>
+          <input type="range" id="fire_cooldown" min="0.05" max="1.5" step="0.05" value="0.20">
+        </div>
+        <div class="hint">
+          Посмотри значение <b>Улыбка</b> в покое и при улыбке — поставь порог посередине.
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Настройки поля</summary>
+      <div class="body">
+        <div class="slider">
+          <div class="label"><span>Ширина поля</span><b id="v-field_width">900</b></div>
+          <input type="range" id="field_width" min="400" max="1600" step="20" value="900">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Высота поля</span><b id="v-field_height">950</b></div>
+          <input type="range" id="field_height" min="400" max="1600" step="20" value="950">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Скорость пули</span><b id="v-bullet_speed">9</b></div>
+          <input type="range" id="bullet_speed" min="2" max="30" step="1" value="9">
+        </div>
+        <div class="slider">
+          <div class="label"><span>Громкость звука</span><b id="v-volume">0.7</b></div>
+          <input type="range" id="volume" min="0" max="1" step="0.05" value="0.7">
+        </div>
+        <div class="hint">
+          Поле масштабируется автоматически под окно.
+        </div>
+      </div>
+    </details>
+
+    <div class="hint">
+      <b>Как играть:</b><br>
+      • Двигай головой и глазами — прицел следует.<br>
+      • Улыбнись (растяни губы, не открывая рот) — выстрел.<br>
+      • Открытие рта не считается улыбкой.
+    </div>
+  </aside>
+
+  <!-- ======================= FIELD ======================= -->
+  <main id="field-wrap">
+    <div id="field">
+      <div id="hud">
+        X <span id="hud-x">0</span> Y <span id="hud-y">0</span><br>
+        SHOTS <span id="hud-shots">0</span>
+      </div>
+      <div id="crosshair"></div>
+    </div>
+  </main>
+</div>
+
+<!-- Звук выстрела -->
+<audio id="blaster" src="/static/blaster.mp3" preload="auto"></audio>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- DOM ----------
+  const $ = (id) => document.getElementById(id);
+  const field       = $("field");
+  const fieldWrap   = $("field-wrap");
+  const crosshair   = $("crosshair");
+  const preview     = $("preview");
+  const previewWrap = $("preview-wrap");
+  const blaster     = $("blaster");
+  const btnStart    = $("btn-start");
+  const btnStop     = $("btn-stop");
+
+  // ---------- Config (синхронизируется с сервером) ----------
+  const CFG = {
+    field_width: 900,
+    field_height: 950,
+    iris_gain: 2.6,
+    iris_gain_y: 1.6,
+    head_gain: 1.5,
+    head_gain_y: 1.0,
+    eye_deadzone: 0.03,
+    head_recenter_rate: 0.006,
+    smoothing_alpha: 0.30,
+    smile_threshold: 0.10,
+    smile_hysteresis: 0.65,
+    fire_cooldown: 0.20,
+    bullet_speed: 9.0,
+    volume: 0.7,
+  };
+
+  // ---------- State ----------
+  let cameraOn = false;
+  let lastShotId = 0;
+  let shotsCount = 0;
+  let lastAim = { x: 0.5, y: 0.5 };
+  let currentAimPx = { x: 0, y: 0 };
+  let bullets = [];
+  let rafId = null;
+  let lastFrameTime = performance.now();
+  let fpsAccum = 0, fpsFrames = 0;
+
+  // ---------- Field scaling ----------
+  function fitField() {
+    const pad = 40;
+    const availW = fieldWrap.clientWidth  - pad;
+    const availH = fieldWrap.clientHeight - pad;
+    const scaleX = availW / CFG.field_width;
+    const scaleY = availH / CFG.field_height;
+    const scale  = Math.min(scaleX, scaleY, 1.5);
+    field.style.width  = CFG.field_width  + "px";
+    field.style.height = CFG.field_height + "px";
+    field.style.transform = `scale(${scale})`;
+  }
+  window.addEventListener("resize", fitField);
+
+  // ---------- Audio ----------
+  function playBlaster() {
+    if (CFG.volume <= 0) return;
+    try {
+      const clone = blaster.cloneNode();
+      clone.volume = CFG.volume;
+      clone.play().catch(() => {/* автоплей может быть заблокирован */});
+    } catch (_) {}
+  }
+
+  // ---------- Bullets ----------
+  function spawnBullet(x, y) {
+    const el = document.createElement("div");
+    el.className = "bullet";
+    el.style.transform = `translate(${x}px, ${y}px)`;
+    field.appendChild(el);
+    bullets.push({ el, x, y });
+  }
+
+  function spawnHit(x, y) {
+    const el = document.createElement("div");
+    el.className = "hit";
+    el.style.left = x + "px";
+    el.style.top  = y + "px";
+    field.appendChild(el);
+    setTimeout(() => el.remove(), 450);
+  }
+
+  function tickBullets() {
+    const speed = CFG.bullet_speed;
+    const next = [];
+    for (const b of bullets) {
+      b.y -= speed;
+      if (b.y < -20) {
+        b.el.remove();
+        continue;
+      }
+      b.el.style.transform = `translate(${b.x}px, ${b.y}px)`;
+      next.push(b);
+    }
+    bullets = next;
+  }
+
+  // ---------- Aim ----------
+  // Нормализация: aim_x/aim_y приходят с сервера в долях поля (0..1),
+  // поэтому переводим их в пиксели поля умножением на field_width/field_height.
+  function setAim(ax, ay, fire) {
+    if (!Number.isFinite(ax) || !Number.isFinite(ay)) return;
+    const x = ax * CFG.field_width;
+    const y = ay * CFG.field_height;
+    currentAimPx = { x, y };
+    // У #crosshair margin -17px, поэтому сдвигаем на половину его размера,
+    // чтобы центр квадрата совпал с точкой прицела.
+    crosshair.style.transform =
+      `translate(${x - 17}px, ${y - 17}px)`;
+    crosshair.classList.toggle("fire", !!fire);
+
+    $("hud-x").textContent = Math.round(x);
+    $("hud-y").textContent = Math.round(y);
+  }
+
+  // ---------- State polling ----------
+  // Опрашиваем /state не чаще, чем раз в STATE_POLL_MIN_MS. Без этого браузер
+  // дёргает сервер на каждом кадре анимации (до 120 раз в секунду), и консоль
+  // забивается строками "GET /state HTTP/1.1" 200; камера всё равно даёт
+  // 30 кадров в секунду, поэтому чаще 60-70 раз в секунду смысла нет.
+  const STATE_POLL_MIN_MS = 15;
+  let lastStatePoll = 0;
+
+  async function pollState() {
+    rafId = requestAnimationFrame(pollState);
+
+    const started = performance.now();
+    if (started - lastStatePoll < STATE_POLL_MIN_MS) return;
+    lastStatePoll = started;
+
+    try {
+      const r = await fetch("/state", { cache: "no-store" });
+      const s = await r.json();
+
+      // FPS
+      const now = performance.now();
+      const dt = now - lastFrameTime;
+      lastFrameTime = now;
+      if (dt > 0) {
+        fpsAccum += 1000 / dt;
+        fpsFrames++;
+        if (fpsFrames >= 10) {
+          $("s-fps").textContent = (fpsAccum / fpsFrames).toFixed(1);
+          fpsAccum = 0; fpsFrames = 0;
+        }
+      }
+
+      // Данные (страхуемся от неполного ответа: исключение здесь оборвало бы
+      // цикл requestAnimationFrame и прицел замер бы навсегда)
+      const num = (v, d = 0) => (Number.isFinite(v) ? v : d);
+      const aimX = num(s.aim_x, 0.5), aimY = num(s.aim_y, 0.5);
+      const irisX = num(s.iris_x, 0.5), irisY = num(s.iris_y, 0.5);
+      const smileScore = num(s.smile_score);
+      const mouthOpen = num(s.mouth_open_score);
+
+      $("s-ax").textContent = aimX.toFixed(3);
+      $("s-ay").textContent = aimY.toFixed(3);
+      $("s-ix").textContent = irisX.toFixed(3);
+      $("s-iy").textContent = irisY.toFixed(3);
+      $("s-smile").textContent = (smileScore >= 0 ? "+" : "") + smileScore.toFixed(3);
+      $("s-mouth").textContent = mouthOpen.toFixed(3);
+
+      const fireEl = $("s-fire");
+      if (!s.camera) {
+        fireEl.textContent = "НЕТ КАМЕРЫ";
+        fireEl.classList.remove("fire");
+      } else if (s.smile) {
+        fireEl.textContent = "🔴 FIRE";
+        fireEl.classList.add("fire");
+      } else {
+        fireEl.textContent = "🟢 READY";
+        fireEl.classList.remove("fire");
+      }
+
+      if (s.camera) {
+        setAim(aimX, aimY, s.smile);
+
+        if (num(s.shot_id) > lastShotId) {
+          lastShotId = s.shot_id;
+          shotsCount++;
+          $("s-shots").textContent = shotsCount;
+          $("hud-shots").textContent = shotsCount;
+          spawnBullet(currentAimPx.x, currentAimPx.y);
+          playBlaster();
+        }
+      }
+    } catch (e) {
+      // Тихо — сервер может перезапускаться
+    }
+  }
+
+  // ---------- Render loop (пули) ----------
+  function renderLoop() {
+    tickBullets();
+    requestAnimationFrame(renderLoop);
+  }
+
+  // ---------- Camera start/stop ----------
+  async function startCamera() {
+    btnStart.disabled = true;
+    try {
+      const r = await fetch("/camera/start", { method: "POST" });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "ошибка запуска");
+      cameraOn = true;
+      preview.src = "/video_feed?" + Date.now();
+      previewWrap.classList.remove("off");
+      btnStop.disabled = false;
+      btnStart.textContent = "✓ КАМЕРА ЗАПУЩЕНА";
+    } catch (e) {
+      alert("Не удалось запустить камеру: " + e.message);
+      btnStart.disabled = false;
+    }
+  }
+
+  async function stopCamera() {
+    btnStop.disabled = true;
+    try {
+      await fetch("/camera/stop", { method: "POST" });
+    } catch (_) {}
+    cameraOn = false;
+    preview.src = "";
+    previewWrap.classList.add("off");
+    btnStart.disabled = false;
+    btnStart.textContent = "▶ ЗАПУСТИТЬ КАМЕРУ";
+  }
+
+  btnStart.addEventListener("click", startCamera);
+  btnStop .addEventListener("click", stopCamera);
+
+  // ---------- Sliders ----------
+  function bindSlider(id, key, fmt, applyFn) {
+    const input = $(id);
+    const out   = $("v-" + id);
+    const upd   = () => {
+      const v = parseFloat(input.value);
+      CFG[key] = v;
+      out.textContent = fmt ? fmt(v) : v;
+      pushConfig({ [key]: v });
+      if (applyFn) applyFn(v);
+    };
+    input.addEventListener("input", upd);
+    // Инициализация от сервера
+    const initial = CFG[key];
+    input.value = initial;
+    out.textContent = fmt ? fmt(initial) : initial;
+    if (applyFn) applyFn(initial);
+  }
+
+  let configPushTimer = null;
+  let configPending = {};
+  function pushConfig(patch) {
+    Object.assign(configPending, patch);
+    if (configPushTimer) return;
+    configPushTimer = setTimeout(async () => {
+      const body = configPending;
+      configPending = {};
+      configPushTimer = null;
+      try {
+        await fetch("/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (_) {}
+    }, 80);
+  }
+
+  function loadConfigFromServer() {
+    fetch("/config").then(r => r.json()).then(cfg => {
+      Object.assign(CFG, cfg);
+      // Обновить UI
+      for (const key of Object.keys(cfg)) {
+        const input = $(key);
+        const out   = $("v-" + key);
+        if (input && out) {
+          input.value = cfg[key];
+          out.textContent = cfg[key];
+        }
+      }
+      fitField();
+    }).catch(() => {});
+  }
+
+  // ---------- Bind all sliders ----------
+  function initSliders() {
+    bindSlider("iris_gain",        "iris_gain");
+    bindSlider("head_gain",        "head_gain");
+    bindSlider("smoothing_alpha",  "smoothing_alpha", v => v.toFixed(2));
+    bindSlider("smile_threshold",  "smile_threshold", v => v.toFixed(3));
+    bindSlider("smile_hysteresis", "smile_hysteresis", v => v.toFixed(2));
+    bindSlider("fire_cooldown",    "fire_cooldown", v => v.toFixed(2));
+    bindSlider("bullet_speed",     "bullet_speed");
+    bindSlider("volume",           "volume", v => v.toFixed(2));
+    bindSlider("field_width",      "field_width", null, () => fitField());
+    bindSlider("field_height",     "field_height", null, () => fitField());
+  }
+
+  // ---------- Boot ----------
+  function boot() {
+    initSliders();
+    fitField();
+    loadConfigFromServer();
+    renderLoop();
+    pollState();
+    // Автостарт камеры
+    startCamera();
+  }
+
+  // Разблокировка audio по первому клику (Chrome autoplay policy)
+  document.addEventListener("click", () => {
+    blaster.play().then(() => blaster.pause()).catch(() => {});
+  }, { once: true });
+
+  boot();
+})();
+</script>
+</body>
+</html>
+
+==============================================================================
+  TOTAL: 9 files | 1513 lines | 54086 bytes
+==============================================================================

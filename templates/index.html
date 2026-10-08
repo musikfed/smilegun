@@ -282,6 +282,25 @@
     from { transform: scale(0.3); opacity: 1; }
     to   { transform: scale(1.6); opacity: 0; }
   }
+  /* Мишень: кольца, центр — «яблочко». Пуля бьёт снизу вверх. */
+  .target {
+    position: absolute;
+    width: 56px;
+    height: 56px;
+    margin-left: -28px;
+    margin-top: -28px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 50%,
+      #ffd24a 0 18%, #f85149 18% 42%, #fff 42% 58%, #f85149 58% 100%);
+    border: 2px solid rgba(255,255,255,0.35);
+    box-shadow: 0 0 16px rgba(248,81,73,0.7), 0 0 40px rgba(248,81,73,0.35);
+    pointer-events: none;
+    animation: target-in 0.18s ease-out;
+  }
+  @keyframes target-in {
+    from { transform: scale(0); }
+    to   { transform: scale(1); }
+  }
   #hud {
     position: absolute;
     top: 12px;
@@ -293,9 +312,175 @@
     pointer-events: none;
     line-height: 1.6;
   }
+  /* ---------- Dendy-меню (титульный экран) ---------- */
+  #menu {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.2em;
+    text-align: center;
+    font-family: "Consolas", "Menlo", monospace;
+    color: var(--text);
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 3px),
+      radial-gradient(circle at 50% 30%, #0d1f17 0, #05070a 70%);
+  }
+  #menu.hidden { display: none; }
+  #menu .title {
+    font-size: clamp(30px, 7vw, 80px);
+    letter-spacing: 0.12em;
+    color: var(--green);
+    text-shadow: 0 0 12px rgba(46,160,67,0.9), 4px 4px 0 #0a0d12;
+  }
+  #menu .title .dot { color: var(--accent); }
+  #menu .sub {
+    font-size: clamp(12px, 1.6vw, 20px);
+    color: var(--muted);
+    letter-spacing: 0.2em;
+  }
+  #menu .best {
+    font-size: clamp(14px, 1.8vw, 22px);
+    color: var(--yellow);
+    letter-spacing: 0.15em;
+  }
+  #menu .blink {
+    font-size: clamp(16px, 2.4vw, 28px);
+    color: var(--text);
+    letter-spacing: 0.25em;
+    animation: blink 1s steps(2, start) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  #menu .menu-btn {
+    font-family: inherit;
+    font-size: clamp(16px, 2.2vw, 26px);
+    letter-spacing: 0.2em;
+    color: var(--green);
+    background: #0d1117;
+    border: 2px solid var(--green);
+    padding: 0.5em 1.4em;
+    cursor: pointer;
+    box-shadow: 0 0 18px rgba(46,160,67,0.4), inset 0 0 12px rgba(46,160,67,0.12);
+  }
+  #menu .menu-btn:hover { background: #12261a; }
+  #menu .levels {
+    display: flex;
+    gap: 0.5em;
+    align-items: center;
+    font-size: clamp(14px, 1.8vw, 22px);
+    letter-spacing: 0.1em;
+  }
+  #menu .levels .lvl-btn {
+    width: 2.2em;
+    height: 2.2em;
+    font-family: inherit;
+    font-size: 1em;
+    color: var(--muted);
+    background: #0d1117;
+    border: 1px solid var(--border);
+    cursor: pointer;
+  }
+  #menu .levels .lvl-btn.active {
+    color: #000;
+    background: var(--green);
+    border-color: var(--green);
+    font-weight: 700;
+  }
+
+  /* ---------- Оверлей внутри поля: «уровень пройден» / «игра окончена» ---------- */
+  #overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1em;
+    text-align: center;
+    font-family: monospace;
+    background: rgba(0,0,0,0.72);
+    color: var(--text);
+  }
+  #overlay.hidden { display: none; }
+  #overlay .big {
+    font-size: clamp(22px, 4vw, 48px);
+    letter-spacing: 0.12em;
+    color: var(--yellow);
+    text-shadow: 0 0 12px rgba(210,153,34,0.8);
+  }
+  #overlay .sub {
+    font-size: clamp(14px, 2vw, 24px);
+    color: var(--muted);
+  }
+  #overlay .menu-btn {
+    font-family: inherit;
+    font-size: clamp(14px, 1.8vw, 22px);
+    letter-spacing: 0.15em;
+    color: var(--green);
+    background: #0d1117;
+    border: 2px solid var(--green);
+    padding: 0.5em 1.4em;
+    cursor: pointer;
+  }
+  #overlay .menu-btn:hover { background: #12261a; }
+  /* Курсор руки для меню (dwell-клик) */
+  #hand-cursor {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 30px;
+    height: 30px;
+    margin-left: -15px;
+    margin-top: -15px;
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 70;
+    box-shadow: 0 0 12px rgba(88,166,255,0.8);
+    transition: border-color 0.15s, box-shadow 0.15s;
+    display: none;
+  }
+  #hand-cursor.over {
+    border-color: var(--green);
+    box-shadow: 0 0 16px rgba(46,160,67,0.9);
+  }
+  .superbar {
+    width: 160px;
+    height: 10px;
+    margin: 4px 0;
+    background: #0d1117;
+    border: 1px solid var(--border);
+  }
+  #super-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #58a6ff, #d29922, #f85149);
+    transition: width 0.1s linear;
+  }
 </style>
 </head>
 <body>
+<!-- ======================= DENDAY-МЕНЮ ======================= -->
+<div id="menu">
+  <div class="title">SMILE<span class="dot">·</span>GUN</div>
+  <div class="sub">ГЛАЗНОЙ ТИР · ПРИЦЕЛ ВЗГЛЯДОМ · УЛЫБКА = ВЫСТРЕЛ</div>
+  <div class="best">РЕКОРД: <span id="menu-best">0</span></div>
+  <div class="levels">
+    <span>УРОВЕНЬ</span>
+    <button class="lvl-btn" data-lvl="0">1</button>
+    <button class="lvl-btn" data-lvl="1">2</button>
+    <button class="lvl-btn" data-lvl="2">3</button>
+    <button class="lvl-btn" data-lvl="3">4</button>
+    <button class="lvl-btn" data-lvl="4">5</button>
+  </div>
+  <button class="menu-btn" id="btn-play">▶ START</button>
+  <div class="blink">PRESS START</div>
+</div>
+
 <div id="app">
 
   <!-- ======================= SIDEBAR ======================= -->
@@ -316,6 +501,7 @@
       <div class="k">FPS камеры</div>     <div class="v" id="s-camfps">—</div>
       <div class="k">Кадров всего</div>   <div class="v" id="s-frames">0</div>
       <div class="k">Лицо в кадре</div>   <div class="v" id="s-face">нет</div>
+      <div class="k">Рука в кадре</div>   <div class="v" id="s-hand">нет</div>
       <div class="k">Прицел X</div>       <div class="v" id="s-ax">—</div>
       <div class="k">Прицел Y</div>       <div class="v" id="s-ay">—</div>
       <div class="k">Зрачок X</div>       <div class="v" id="s-ix">—</div>
@@ -330,55 +516,25 @@
     <div class="hint err" id="s-error" style="display:none"></div>
 
     <details open>
-      <summary>Настройки управления</summary>
+      <summary>Управление рукой и супер</summary>
       <div class="body">
         <div class="slider">
-          <div class="label"><span>Усиление зрачков (X)</span><b id="v-iris_gain">2.6</b></div>
-          <input type="range" id="iris_gain" min="0.5" max="8" step="0.1" value="2.6">
+          <div class="label"><span>Усиление руки</span><b id="v-hand_gain">1.2</b></div>
+          <input type="range" id="hand_gain" min="0.5" max="3" step="0.1" value="1.2">
         </div>
         <div class="slider">
-          <div class="label"><span>Усиление зрачков (Y)</span><b id="v-iris_gain_y">1.6</b></div>
-          <input type="range" id="iris_gain_y" min="0.2" max="4" step="0.1" value="1.6">
-        </div>
-        <div class="slider">
-          <div class="label"><span>Сглаживание (меньше = плавнее)</span><b id="v-smoothing_alpha">0.30</b></div>
-          <input type="range" id="smoothing_alpha" min="0.05" max="1" step="0.01" value="0.30">
+          <div class="label"><span>Скорость зарядки супера</span><b id="v-super_charge_rate">0.60</b></div>
+          <input type="range" id="super_charge_rate" min="0.1" max="2" step="0.05" value="0.6">
         </div>
         <div class="btn-row">
           <button id="btn-calibrate">🎯 КАЛИБРОВКА</button>
           <button id="btn-calibrate-reset">СБРОС</button>
         </div>
         <div class="hint">
-          Смотри в центр поля и нажми <b>КАЛИБРОВКА</b> — прицел запомнит
-          нейтраль взгляда (кнопка работает ~0.5 секунды).<br>
-          Голова в прицеле не участвует вовсе: кубик идёт только за зрачками.<br>
-          Если прицел <b>дёргается</b> — уменьши сглаживание.<br>
-          Если <b>не достаёт до краёв</b> — увеличь усиление.
-        </div>
-      </div>
-    </details>
-
-    <details open>
-      <summary>Настройки улыбки и выстрела</summary>
-      <div class="body">
-        <div class="slider">
-          <div class="label"><span>Порог улыбки (ширина рта / глаз)</span><b id="v-smile_threshold">1.55</b></div>
-          <input type="range" id="smile_threshold" min="1.1" max="3" step="0.01" value="1.55">
-        </div>
-        <div class="slider">
-          <div class="label"><span>Гистерезис (отпускание)</span><b id="v-smile_hysteresis">0.65</b></div>
-          <input type="range" id="smile_hysteresis" min="0.3" max="1" step="0.05" value="0.65">
-        </div>
-        <div class="slider">
-          <div class="label"><span>Открытый рот → двойной выстрел</span><b id="v-mouth_open_threshold">0.30</b></div>
-          <input type="range" id="mouth_open_threshold" min="0.05" max="0.8" step="0.01" value="0.30">
-        </div>
-        <div class="hint">
-          Улыбка считается по <b>ширине</b> рта: улыбайся широко, губы можно
-          сжать — рот открывать не нужно.<br>
-          Посмотри значение <b>Улыбка</b> в покое и при улыбке — порог поставь
-          посередине.<br>
-          <b>Широко открытый рот</b> — двойной выстрел.
+          <b>КАЛИБРОВКА</b> запоминает нейтраль взгляда для зарядки супера
+          (~1 секунда, моргания игнорируются).<br>
+          Двигай <b>глазами</b> — СУПЕР заряжается, кубик дрожит и меняет размер.<br>
+          Полный заряд + <b>4 моргания</b> = супер-выстрел по всем мишеням.
         </div>
       </div>
     </details>
@@ -410,10 +566,10 @@
 
     <div class="hint">
       <b>Как играть:</b><br>
-      • Двигай <b>только глазами</b> — голова не нужна, кубик идёт за зрачками.<br>
-      • Широко улыбнись — одиночный выстрел.<br>
-      • Открой рот широко — двойной выстрел.<br>
-      • Первым делом нажми <b>КАЛИБРОВКА</b>, глядя в центр поля.
+      • Води <b>рукой</b> — прицел идёт за ладонью.<br>
+      • Сожми руку в <b>кулак</b> — одиночный выстрел.<br>
+      • Двигай <b>глазами</b> — заряжается СУПЕР (кубик дрожит и меняет размер).<br>
+      • Полный заряд + <b>4 моргания</b> — супер-выстрел сносит все мишени.
     </div>
   </aside>
 
@@ -421,16 +577,27 @@
   <main id="field-wrap">
     <div id="field">
       <div id="hud">
-        X <span id="hud-x">0</span> Y <span id="hud-y">0</span><br>
-        SHOTS <span id="hud-shots">0</span>
+        LEVEL <span id="hud-level">1</span> · SCORE <span id="hud-score">0</span><br>
+        TIME <span id="hud-time">40</span> · <span id="hud-left">5</span> МИШЕНЕЙ · SHOTS <span id="hud-shots">0</span> <span id="hud-combo"></span><br>
+        SUPER <span id="hud-super">0%</span> <span id="hud-super-hint"></span>
+        <div class="superbar"><div id="super-fill"></div></div>
+        X <span id="hud-x">0</span> Y <span id="hud-y">0</span>
       </div>
       <div id="crosshair"></div>
+      <div id="overlay" class="hidden">
+        <div class="big" id="overlay-title">ГОТОВЬСЯ…</div>
+        <div class="sub" id="overlay-sub"></div>
+        <button class="menu-btn" id="overlay-btn">В МЕНЮ</button>
+      </div>
     </div>
   </main>
 </div>
 
-<!-- Звук выстрела -->
+<!-- Звуки -->
 <audio id="blaster" src="/static/blaster.mp3" preload="auto"></audio>
+<audio id="charge" src="/static/charge.mp3" preload="auto" loop></audio>
+<audio id="super" src="/static/super.mp3" preload="auto"></audio>
+<div id="hand-cursor"></div>
 
 <script>
 (() => {
@@ -444,49 +611,72 @@
   const preview     = $("preview");
   const previewWrap = $("preview-wrap");
   const blaster     = $("blaster");
+  const chargeSnd   = $("charge");
+  const superSnd    = $("super");
   const btnStart    = $("btn-start");
   const btnStop     = $("btn-stop");
+  const menu        = $("menu");
+  const overlay     = $("overlay");
+  const overlayTitle = $("overlay-title");
+  const overlaySub  = $("overlay-sub");
+  const overlayBtn  = $("overlay-btn");
+  const btnPlay     = $("btn-play");
+  const menuBest    = $("menu-best");
+  const handCursor  = $("hand-cursor");
 
   // ---------- Config (синхронизируется с сервером) ----------
   // Ключи должны совпадать с config.py: сервер молча игнорирует незнакомые.
   const CFG = {
     field_width: 900,
     field_height: 950,
-    iris_gain: 2.6,
-    iris_gain_y: 1.6,
-    smoothing_alpha: 0.30,
+    hand_gain: 1.2,
+    super_charge_rate: 0.6,
     gaze_neutral_x: 0.0,
     gaze_neutral_y: 0.0,
-    smile_threshold: 1.55,
-    smile_hysteresis: 0.65,
-    mouth_open_threshold: 0.30,
     bullet_speed: 9.0,
-    volume: 0.7,          // только клиент: громкость звука выстрела
+    volume: 0.7,          // только клиент: громкость звуков
   };
 
   // Формат отображения значений — общий для слайдеров и загрузки с сервера
   const FMT = {
-    iris_gain:            v => v.toFixed(1),
-    iris_gain_y:          v => v.toFixed(1),
-    smoothing_alpha:      v => v.toFixed(2),
-    gaze_neutral_x:       v => v.toFixed(3),
-    gaze_neutral_y:       v => v.toFixed(3),
-    smile_threshold:      v => v.toFixed(2),
-    smile_hysteresis:     v => v.toFixed(2),
-    mouth_open_threshold: v => v.toFixed(2),
-    bullet_speed:         v => String(v),
-    volume:               v => v.toFixed(2),
-    field_width:          v => String(v),
-    field_height:         v => String(v),
+    hand_gain:           v => v.toFixed(1),
+    super_charge_rate:   v => v.toFixed(2),
+    gaze_neutral_x:      v => v.toFixed(3),
+    gaze_neutral_y:      v => v.toFixed(3),
+    bullet_speed:        v => String(v),
+    volume:              v => v.toFixed(2),
+    field_width:         v => String(v),
+    field_height:        v => String(v),
   };
 
   // ---------- State ----------
   let cameraOn = false;
-  let lastShotId = 0;
+  let lastShotId = null;
+  let lastSuperId = 0;
+  const SUPER_BLINKS = 4;   // должно совпадать с super_blink_count в config.py
   let shotsCount = 0;
   let lastAim = { x: 0.5, y: 0.5 };
   let currentAimPx = { x: 0, y: 0 };
   let bullets = [];
+  let targets = [];
+  let score = 0;
+  let combo = 0;
+  let comboTimer = null;
+  const TARGET_R = 28;
+  // Уровни: сколько мишеней сбить, сколько секунд, скорость дрейфа мишеней.
+  const LEVELS = [
+    { targets: 5,  time: 40, move: 0   },
+    { targets: 8,  time: 40, move: 0   },
+    { targets: 10, time: 35, move: 0.6 },
+    { targets: 12, time: 35, move: 1.0 },
+    { targets: 15, time: 30, move: 1.4 },
+  ];
+  let currentLevel = 0;
+  let levelTargetsLeft = 0;
+  let timeLeft = 0;
+  let timerId = null;
+  let gameActive = false;
+  let bestScore = 0;
   let rafId = null;
   let lastFrameTime = performance.now();
   let fpsAccum = 0, fpsFrames = 0;
@@ -524,6 +714,15 @@
     } catch (_) {}
   }
 
+  function playSuper() {
+    if (CFG.volume <= 0) return;
+    try {
+      const clone = superSnd.cloneNode();
+      clone.volume = CFG.volume;
+      clone.play().catch(() => {});
+    } catch (_) {}
+  }
+
   // ---------- Bullets ----------
   function spawnBullet(x, y) {
     const el = document.createElement("div");
@@ -542,19 +741,288 @@
     setTimeout(() => el.remove(), 450);
   }
 
+  // ---------- Targets ----------
+  function spawnTarget() {
+    const el = document.createElement("div");
+    el.className = "target";
+    // Мишени только в верхней части поля: пуля летит снизу вверх.
+    const maxY = Math.max(TARGET_R, CFG.field_height * 0.55);
+    const x = TARGET_R + Math.random() * Math.max(1, CFG.field_width - TARGET_R * 2);
+    const y = TARGET_R + Math.random() * Math.max(1, maxY - TARGET_R);
+    el.style.left = x + "px";
+    el.style.top = y + "px";
+    field.appendChild(el);
+    targets.push({ el, x, y, r: TARGET_R, vx: Math.random() < 0.5 ? -1 : 1 });
+  }
+
+  function clearTargets() {
+    for (const t of targets) t.el.remove();
+    targets = [];
+  }
+
+  function respawnTargets() {
+    clearTargets();
+    const n = gameActive ? Math.min(3, levelTargetsLeft) : 0;
+    for (let i = 0; i < n; i++) spawnTarget();
+  }
+
+  function addScore(t) {
+    combo++;
+    score += 10;
+    levelTargetsLeft--;
+    $("hud-score").textContent = score;
+    $("hud-left").textContent = Math.max(0, levelTargetsLeft);
+    $("hud-combo").textContent = combo > 1 ? "COMBO ×" + combo : "";
+    clearTimeout(comboTimer);
+    comboTimer = setTimeout(() => {
+      combo = 0;
+      $("hud-combo").textContent = "";
+    }, 1500);
+  }
+
+  function registerHit(t) {
+    addScore(t);
+    if (levelTargetsLeft <= 0) {
+      levelComplete();
+    } else {
+      // Новая мишень не мгновенно: иначе следующий выстрел цепляет её сразу.
+      setTimeout(spawnTarget, 350);
+    }
+  }
+
+  // Супер-выстрел: сносит все мишени на поле.
+  function triggerSuper() {
+    for (const t of targets) {
+      spawnHit(t.x, t.y);
+      t.el.remove();
+      addScore(t);
+    }
+    targets = [];
+    score += 20;
+    $("hud-score").textContent = score;
+    playSuper();
+    if (levelTargetsLeft <= 0) {
+      levelComplete();
+    } else {
+      setTimeout(respawnTargets, 500);
+    }
+  }
+
   function tickBullets() {
     const speed = CFG.bullet_speed;
     const next = [];
     for (const b of bullets) {
       b.y -= speed;
-      if (b.y < -20) {
+      // Столкновение пули (точка) с мишенью (круг).
+      let hit = null;
+      for (const t of targets) {
+        const dx = b.x - t.x;
+        const dy = b.y - t.y;
+        const rr = t.r + 4;
+        if (dx * dx + dy * dy <= rr * rr) { hit = t; break; }
+      }
+      if (hit || b.y < -20) {
         b.el.remove();
+        if (hit) {
+          hit.el.remove();
+          targets = targets.filter(x => x !== hit);
+          spawnHit(hit.x, hit.y);
+          registerHit(hit);
+        }
         continue;
       }
       b.el.style.transform = `translate(${b.x}px, ${b.y}px)`;
       next.push(b);
     }
     bullets = next;
+  }
+
+  // ---------- Game flow: уровни, таймер, меню ----------
+  function showMenu() {
+    menu.classList.remove("hidden");
+    overlay.classList.add("hidden");
+    gameActive = false;
+    stopTimer();
+    clearTargets();
+  }
+
+  function showOverlay(title, sub, btnText) {
+    overlayTitle.textContent = title;
+    overlaySub.textContent = sub;
+    overlayBtn.textContent = btnText;
+    overlayBtn.hidden = false;
+    overlay.classList.remove("hidden");
+  }
+
+  function setSelectedLevel(lvl) {
+    currentLevel = lvl;
+    document.querySelectorAll(".lvl-btn").forEach(b => {
+      b.classList.toggle("active", Number(b.dataset.lvl) === lvl);
+    });
+  }
+
+  function updateMenuBest() {
+    menuBest.textContent = bestScore;
+  }
+
+  function tickTargets() {
+    const speed = LEVELS[currentLevel].move;
+    if (!speed || !gameActive) return;
+    for (const t of targets) {
+      t.x += t.vx * speed;
+      if (t.x < t.r || t.x > CFG.field_width - t.r) {
+        t.vx *= -1;
+        t.x = Math.max(t.r, Math.min(CFG.field_width - t.r, t.x));
+      }
+      t.el.style.left = t.x + "px";
+    }
+  }
+
+  function startTimer() {
+    stopTimer();
+    timerId = setInterval(() => {
+      if (!gameActive) return;
+      timeLeft--;
+      $("hud-time").textContent = Math.max(0, timeLeft);
+      if (timeLeft <= 0) gameOver();
+    }, 1000);
+  }
+
+  function stopTimer() {
+    if (timerId) { clearInterval(timerId); timerId = null; }
+  }
+
+  function beginLevel(lvl) {
+    currentLevel = lvl;
+    const spec = LEVELS[lvl];
+    levelTargetsLeft = spec.targets;
+    timeLeft = spec.time;
+    $("hud-level").textContent = lvl + 1;
+    $("hud-score").textContent = score;
+    $("hud-left").textContent = spec.targets;
+    $("hud-time").textContent = spec.time;
+    overlay.classList.add("hidden");
+    gameActive = false;
+    stopTimer();
+    clearTargets();
+    for (let i = 0; i < Math.min(3, levelTargetsLeft); i++) spawnTarget();
+    runCountdown();
+  }
+
+  // Короткий «3-2-1» перед стартом уровня: заодно окно для калибровки.
+  function runCountdown() {
+    let n = 3;
+    overlay.classList.remove("hidden");
+    overlayBtn.hidden = true;
+    overlayTitle.textContent = "3";
+    overlaySub.textContent = "";
+    const tick = () => {
+      n--;
+      if (n > 0) {
+        overlayTitle.textContent = String(n);
+        setTimeout(tick, 600);
+      } else {
+        overlay.classList.add("hidden");
+        overlayBtn.hidden = false;
+        gameActive = true;
+        startTimer();
+      }
+    };
+    setTimeout(tick, 600);
+  }
+
+  function levelComplete() {
+    gameActive = false;
+    stopTimer();
+    clearTargets();
+    if (currentLevel + 1 < LEVELS.length) {
+      showOverlay("УРОВЕНЬ " + (currentLevel + 1) + " ПРОЙДЕН!",
+        "Счёт: " + score, "ДАЛЬШЕ ▶");
+      overlayBtn.onclick = () => beginLevel(currentLevel + 1);
+    } else {
+      saveBestScore();
+      showOverlay("ПОБЕДА!",
+        "Все уровни пройдены. Счёт: " + score, "В МЕНЮ");
+      overlayBtn.onclick = showMenu;
+    }
+  }
+
+  function gameOver() {
+    gameActive = false;
+    stopTimer();
+    clearTargets();
+    saveBestScore();
+    showOverlay("ИГРА ОКОНЧЕНА",
+      "Счёт: " + score + " · Рекорд: " + Math.max(bestScore, score), "В МЕНЮ");
+    overlayBtn.onclick = showMenu;
+  }
+
+  function saveBestScore() {
+    if (score > bestScore) {
+      bestScore = score;
+      updateMenuBest();
+      fetch("/score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ score }),
+      }).then(r => r.json()).then(j => {
+        if (Number.isFinite(j.best_score) && j.best_score > bestScore) {
+          bestScore = j.best_score;
+          updateMenuBest();
+        }
+      }).catch(() => {});
+    }
+  }
+
+  async function startGame() {
+    menu.classList.add("hidden");
+    if (!cameraOn) {
+      const ok = await startCamera();
+      if (!ok) { menu.classList.remove("hidden"); return; }
+    }
+    // Новая партия — счёт и выстрелы с нуля, рекорд остаётся.
+    score = 0;
+    shotsCount = 0;
+    combo = 0;
+    lastShotId = null;
+    $("hud-score").textContent = 0;
+    $("s-shots").textContent = 0;
+    $("hud-shots").textContent = 0;
+    beginLevel(currentLevel);
+  }
+
+  // ---------- Hand cursor + dwell-click (меню) ----------
+  const DWELL_MS = 900;
+  let dwellTarget = null;
+  let dwellStart = 0;
+
+  function updateHandCursor(s) {
+    const menuOpen = !menu.classList.contains("hidden");
+    const overlayOpen = !overlay.classList.contains("hidden");
+    if (!s.hand_present || (!menuOpen && !overlayOpen)) {
+      handCursor.style.display = "none";
+      dwellTarget = null;
+      return;
+    }
+    handCursor.style.display = "block";
+    // По X зеркалим, как и прицел: рука вправо = курсор вправо.
+    const x = (1 - s.hand_x) * window.innerWidth;
+    const y = s.hand_y * window.innerHeight;
+    handCursor.style.transform = `translate(${x}px, ${y}px)`;
+
+    // Dwell-клик работает только в меню/оверлее; в игре рука ведёт прицел.
+    const el = document.elementFromPoint(x, y);
+    const btn = el && el.closest(".menu-btn, .lvl-btn");
+    handCursor.classList.toggle("over", !!btn);
+    if (btn === dwellTarget) {
+      if (performance.now() - dwellStart >= DWELL_MS) {
+        dwellTarget = null;
+        btn.click();
+      }
+    } else {
+      dwellTarget = btn;
+      dwellStart = performance.now();
+    }
   }
 
   // ---------- Aim ----------
@@ -566,6 +1034,7 @@
   // от того, как долго держится улыбка (у неё ещё и гистерезис).
   const SHOT_FLASH_MS = 160;
   let shotFlashUntil = 0;
+  let crosshairScale = 1;
 
   function setAim(ax, ay) {
     if (!Number.isFinite(ax) || !Number.isFinite(ay)) return;
@@ -575,7 +1044,7 @@
     // У #crosshair margin -17px, поэтому сдвигаем на половину его размера,
     // чтобы центр квадрата совпал с точкой прицела.
     crosshair.style.transform =
-      `translate(${x - 17}px, ${y - 17}px)`;
+      `translate(${x - 17}px, ${y - 17}px) scale(${crosshairScale})`;
     crosshair.classList.toggle("fire", performance.now() < shotFlashUntil);
     crosshair.classList.remove("off");
 
@@ -589,11 +1058,24 @@
     const x = CFG.field_width / 2;
     const y = CFG.field_height / 2;
     currentAimPx = { x, y };
-    crosshair.style.transform = `translate(${x - 17}px, ${y - 17}px)`;
+    crosshair.style.transform = `translate(${x - 17}px, ${y - 17}px) scale(${crosshairScale})`;
     crosshair.classList.remove("fire");
     crosshair.classList.add("off");
     $("hud-x").textContent = "—";
     $("hud-y").textContent = "—";
+  }
+
+  // Хаотичный размер кубика при зарядке; пульс при полном заряде.
+  function updateCrosshairScale(s) {
+    if (s.super_ready) {
+      crosshairScale = 1.5 + 0.3 * Math.sin(performance.now() / 120);
+    } else if (s.charging) {
+      crosshairScale = 0.55 + Math.random() * 1.0;
+    } else {
+      crosshairScale = 1;
+    }
+    crosshair.style.transform =
+      `translate(${currentAimPx.x - 17}px, ${currentAimPx.y - 17}px) scale(${crosshairScale})`;
   }
 
   // ---------- State polling ----------
@@ -652,6 +1134,7 @@
       $("s-camfps").textContent = num(s.fps).toFixed(1);
       $("s-frames").textContent = String(num(s.frames_read));
       $("s-face").textContent = s.face ? "есть" : "нет";
+      $("s-hand").textContent = s.hand_present ? "есть" : "нет";
       // Камера запущена, а кадров нет — пишем это прямо на чёрном превью
       const noFrames = num(s.frames_read) === 0;
       previewWrap.classList.toggle("err", cameraOn && noFrames);
@@ -664,39 +1147,80 @@
         fireEl.textContent = "⚠ КАМЕРА";
         fireEl.classList.add("fire");
       } else if (!s.camera) {
-        fireEl.textContent = num(s.frames_read) > 0 ? "НЕТ ЛИЦА" : "НЕТ КАДРОВ";
+        fireEl.textContent = num(s.frames_read) > 0 ? "НЕТ КАДРОВ" : "НЕТ КАМЕРЫ";
         fireEl.classList.remove("fire");
-      } else if (s.mouth_open) {
-        fireEl.textContent = "🔴 DOUBLE";
+      } else if (s.fist) {
+        fireEl.textContent = "✊ ВЫСТРЕЛ";
         fireEl.classList.add("fire");
-      } else if (s.smile) {
-        fireEl.textContent = "🔴 FIRE";
+      } else if (s.super_ready) {
+        fireEl.textContent = "⭐ СУПЕР ГОТОВ";
         fireEl.classList.add("fire");
+      } else if (s.hand_present) {
+        fireEl.textContent = "✋ РУКА";
+        fireEl.classList.remove("fire");
       } else {
-        fireEl.textContent = "🟢 READY";
+        fireEl.textContent = "🙈 НЕТ РУКИ";
         fireEl.classList.remove("fire");
       }
 
       if (s.camera) {
         // Сначала считаем выстрел: кубик краснеет на сам выстрел, а не на
         // удержание улыбки — в остальное время он всегда зелёный.
-        const delta = num(s.shot_id) - lastShotId;
-        if (delta > 0) {
-          lastShotId = num(s.shot_id);
-          shotsCount += delta;
-          shotFlashUntil = performance.now() + SHOT_FLASH_MS;
-          $("s-shots").textContent = shotsCount;
-          $("hud-shots").textContent = shotsCount;
-          for (let i = 0; i < Math.min(delta, 4); i++) {
-            const spread = delta > 1 ? (i - (delta - 1) / 2) * 12 : 0;
-            spawnBullet(currentAimPx.x + spread, currentAimPx.y);
+        const sid = num(s.shot_id);
+        if (lastShotId === null) {
+          lastShotId = sid;
+        } else {
+          const delta = sid - lastShotId;
+          lastShotId = sid;
+          if (delta > 0 && gameActive) {
+            shotsCount += delta;
+            shotFlashUntil = performance.now() + SHOT_FLASH_MS;
+            $("s-shots").textContent = shotsCount;
+            $("hud-shots").textContent = shotsCount;
+            for (let i = 0; i < Math.min(delta, 4); i++) {
+              const spread = delta > 1 ? (i - (delta - 1) / 2) * 12 : 0;
+              spawnBullet(currentAimPx.x + spread, currentAimPx.y);
+            }
+            playBlaster();
           }
-          playBlaster();
         }
         setAim(aimX, aimY);
       } else {
         centerCrosshair();
       }
+
+      // Супер: индикатор заряда и подсказка
+      const chargePct = Math.round(num(s.super_charge) * 100);
+      $("hud-super").textContent = chargePct + "%";
+      $("super-fill").style.width = chargePct + "%";
+      if (s.super_ready) {
+        const left = Math.max(0, SUPER_BLINKS - num(s.blink_count));
+        $("hud-super-hint").textContent = "МИГНИ " + left + "×";
+      } else {
+        $("hud-super-hint").textContent = "";
+      }
+
+      // Звук зарядки: гудит, пока идёт зарядка во время игры
+      if (s.charging && gameActive) {
+        if (chargeSnd.paused) {
+          chargeSnd.currentTime = 0;
+          chargeSnd.volume = CFG.volume * 0.6;
+          chargeSnd.play().catch(() => {});
+        }
+      } else {
+        chargeSnd.pause();
+        chargeSnd.currentTime = 0;
+      }
+
+      // Супер-выстрел
+      const superId = num(s.super_id);
+      if (superId > lastSuperId) {
+        lastSuperId = superId;
+        if (gameActive) triggerSuper();
+      }
+
+      updateCrosshairScale(s);
+      updateHandCursor(s);
     } catch (e) {
       // Тихо — сервер может перезапускаться
     }
@@ -704,6 +1228,7 @@
 
   // ---------- Render loop (пули) ----------
   function renderLoop() {
+    tickTargets();
     tickBullets();
     requestAnimationFrame(renderLoop);
   }
@@ -720,9 +1245,11 @@
       previewWrap.classList.remove("off");
       btnStop.disabled = false;
       btnStart.textContent = "✓ КАМЕРА ЗАПУЩЕНА";
+      return true;
     } catch (e) {
       alert("Не удалось запустить камеру: " + e.message);
       btnStart.disabled = false;
+      return false;
     }
   }
 
@@ -803,6 +1330,10 @@
   function loadConfigFromServer() {
     fetch("/config").then(r => r.json()).then(cfg => {
       Object.assign(CFG, cfg);
+      if (Number.isFinite(cfg.best_score)) {
+        bestScore = cfg.best_score;
+        updateMenuBest();
+      }
       // Обновить UI теми же форматами, что и у слайдеров
       for (const key of Object.keys(cfg)) {
         const input = $(key);
@@ -818,17 +1349,27 @@
 
   // ---------- Bind all sliders ----------
   function initSliders() {
-    bindSlider("iris_gain",            "iris_gain");
-    bindSlider("iris_gain_y",          "iris_gain_y");
-    bindSlider("smoothing_alpha",      "smoothing_alpha");
-    bindSlider("smile_threshold",      "smile_threshold");
-    bindSlider("smile_hysteresis",     "smile_hysteresis");
-    bindSlider("mouth_open_threshold", "mouth_open_threshold");
-    bindSlider("bullet_speed",         "bullet_speed");
-    bindSlider("volume",               "volume", null, false);
-    bindSlider("field_width",          "field_width", () => fitField());
-    bindSlider("field_height",         "field_height", () => fitField());
+    bindSlider("hand_gain",           "hand_gain");
+    bindSlider("super_charge_rate",   "super_charge_rate");
+    bindSlider("bullet_speed",        "bullet_speed");
+    bindSlider("volume",              "volume", null, false);
+    bindSlider("field_width",         "field_width", () => { fitField(); respawnTargets(); });
+    bindSlider("field_height",        "field_height", () => { fitField(); respawnTargets(); });
   }
+
+  // ---------- Menu wiring ----------
+  btnPlay.addEventListener("click", startGame);
+  document.querySelectorAll(".lvl-btn").forEach(b => {
+    b.addEventListener("click", () => setSelectedLevel(Number(b.dataset.lvl)));
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    if (!menu.classList.contains("hidden")) {
+      startGame();
+    } else if (!overlay.classList.contains("hidden") && !overlayBtn.hidden) {
+      overlayBtn.click();
+    }
+  });
 
   // ---------- Boot ----------
   function boot() {
@@ -838,8 +1379,8 @@
     loadConfigFromServer();
     renderLoop();
     pollState();
-    // Автостарт камеры
-    startCamera();
+    showMenu();
+    setSelectedLevel(0);
   }
 
   // Разблокировка audio по первому клику (Chrome autoplay policy)

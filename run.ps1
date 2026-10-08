@@ -11,7 +11,7 @@ if (-not (Test-Path '.venv')) {
 
 uv pip install -r requirements.txt
 
-if (-not (Test-Path 'static\blaster.mp3')) {
+if ((-not (Test-Path 'static\blaster.mp3')) -or (-not (Test-Path 'static\charge.mp3')) -or (-not (Test-Path 'static\super.mp3'))) {
     uv run python generate_sound.py
 }
 

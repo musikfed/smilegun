@@ -1,3 +1,5 @@
+import math
+import statistics
 import threading
 import time
 import cv2
@@ -41,6 +43,41 @@ class EMA:
             self.value = self.alpha * new_value + (1 - self.alpha) * self.value
         return self.value
 
+# Адаптивный фильтр «One Euro»: плавный в покое (гасит дрожание) и отзывчивый
+# при быстром движении. Стандарт для трекинга взгляда и руки.
+class OneEuro:
+    def __init__(self, min_cutoff: float = 1.2, beta: float = 0.3,
+                 d_cutoff: float = 1.0):
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self.x_prev = None
+        self.dx_prev = 0.0
+        self.t_prev = None
+
+    @staticmethod
+    def _alpha(cutoff: float, dt: float) -> float:
+        tau = 1.0 / (2.0 * 3.141592653589793 * cutoff)
+        return 1.0 / (1.0 + tau / dt)
+
+    def update(self, x: float, t: float) -> float:
+        if self.x_prev is None:
+            self.x_prev = x
+            self.t_prev = t
+            return x
+        dt = t - self.t_prev
+        if dt <= 0:
+            dt = 1e-3
+        self.t_prev = t
+        dx = (x - self.x_prev) / dt
+        dx = self._alpha(self.d_cutoff, dt) * dx + \
+            (1.0 - self._alpha(self.d_cutoff, dt)) * self.dx_prev
+        self.dx_prev = dx
+        cutoff = self.min_cutoff + self.beta * abs(dx)
+        a = self._alpha(cutoff, dt)
+        self.x_prev = a * x + (1.0 - a) * self.x_prev
+        return self.x_prev
+
 def clamp01(value: float) -> float:
     """Прицел не должен выходить за поле."""
     return 0.0 if value < 0.0 else (1.0 if value > 1.0 else value)
@@ -63,6 +100,15 @@ def eye_gaze(iris_x: float, iris_y: float, outer_x: float, inner_x: float,
     center_y = (top_y + bottom_y) / 2.0
     return (iris_x - center_x) / eye_w, (iris_y - center_y) / eye_h, eye_w
 
+def apply_deadzone(value: float, deadzone: float) -> float:
+    """Непрерывная мёртвая зона: 0 внутри, плавно наружу, без скачка на краю."""
+    if deadzone <= 0:
+        return value
+    if abs(value) <= deadzone:
+        return 0.0
+    sign = 1.0 if value > 0 else -1.0
+    return sign * (abs(value) - deadzone) / (1.0 - deadzone)
+
 def gaze_to_aim(gaze_x: float, gaze_y: float) -> tuple[float, float]:
     """Прицел только по зрачкам: смещение взгляда от откалиброванной нейтрали.
 
@@ -70,8 +116,10 @@ def gaze_to_aim(gaze_x: float, gaze_y: float) -> tuple[float, float]:
     в центр поля. Поэтому прицел не зависит ни от посадки, ни от размера лица,
     ни от положения головы — только от движения зрачков.
     """
-    offset_x = (gaze_x - CFG.gaze_neutral_x) * CFG.iris_gain
-    offset_y = (gaze_y - CFG.gaze_neutral_y) * CFG.iris_gain * CFG.iris_gain_y
+    dx = apply_deadzone(gaze_x - CFG.gaze_neutral_x, CFG.gaze_deadzone)
+    dy = apply_deadzone(gaze_y - CFG.gaze_neutral_y, CFG.gaze_deadzone)
+    offset_x = dx * CFG.iris_gain
+    offset_y = dy * CFG.iris_gain * CFG.iris_gain_y
     return clamp01(FIELD_CENTER + offset_x), clamp01(FIELD_CENTER + offset_y)
 
 # Класс для отслеживания камеры
@@ -97,6 +145,15 @@ class CameraTracker:
             "mouth_open": False,
             "calibrating": False,
             "shot_id": 0,
+            "hand_present": False,
+            "hand_x": 0.5,
+            "hand_y": 0.5,
+            "fist": False,
+            "super_charge": 0.0,
+            "super_ready": False,
+            "super_id": 0,
+            "blink_count": 0,
+            "charging": False,
             # Диагностика камеры: без неё «НЕТ КАМЕРЫ» не отличить от
             # «кадры идут, но лица не видно» и от «устройство занято».
             "frames_read": 0,
@@ -108,6 +165,12 @@ class CameraTracker:
         self._calib_samples = None
         self._prev_smile = False
         self._prev_mouth_open = False
+        self._prev_fist = False
+        self._fist_held = False
+        self._prev_blink = False
+        self._charge = 0.0
+        self._blink_history = []
+        self._prev_charge_time = time.time()
         self._held = {"smile": False, "mouth_open": False}
         self._fps_window_start = time.time()
         self._fps_frames = 0
@@ -117,12 +180,22 @@ class CameraTracker:
             refine_landmarks=True,
             max_num_faces=1
         )
-        self.iris_ema_x = EMA(CFG.smoothing_alpha)
-        self.iris_ema_y = EMA(CFG.smoothing_alpha)
+        self.hands = mp.solutions.hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.6,
+            min_tracking_confidence=0.5,
+        )
+        # One Euro вместо голого EMA: убирает дрожание взгляда и руки.
+        self.gaze_flt_x = OneEuro(min_cutoff=1.2, beta=0.3)
+        self.gaze_flt_y = OneEuro(min_cutoff=1.2, beta=0.3)
+        self.hand_flt_x = OneEuro(min_cutoff=1.0, beta=0.2)
+        self.hand_flt_y = OneEuro(min_cutoff=1.0, beta=0.2)
         self.smile_ema = EMA(CFG.smoothing_alpha)
         self.mouth_ema = EMA(CFG.smoothing_alpha)
 
-    CALIB_FRAMES = 15
+    CALIB_FRAMES = 25
+    BLINK_RATIO = 0.15          # раскрытие глаза ниже этого = моргание
     MAX_READ_FAILURES = 60      # ~2 секунды без кадров
     REOPEN_COOLDOWN = 5.0       # сек между попытками переоткрыть камеру
 
@@ -131,17 +204,38 @@ class CameraTracker:
         with self.lock:
             self._calib_samples = []
 
-    def _collect_calibration(self, gaze_x: float, gaze_y: float) -> None:
+    @staticmethod
+    def _robust_center(values: list[float]) -> float:
+        """Медиана с отбрасыванием выбросов (3σ по MAD).
+
+        Раньше нейтраль считалась средним арифметическим: одно моргание или
+        рывок зрачка утаскивали её вбок. Медиана с отсечкой выбросов держит
+        нейтраль на реальном центре взгляда.
+        """
+        med = statistics.median(values)
+        mad = statistics.median([abs(v - med) for v in values])
+        if mad == 0:
+            return med
+        tol = 3.0 * 1.4826 * mad
+        keep = [v for v in values if abs(v - med) <= tol]
+        return sum(keep) / len(keep) if keep else med
+
+    def _collect_calibration(self, gaze_x: float, gaze_y: float,
+                             blink: bool = False) -> None:
         if self._calib_samples is None:
+            return
+        if blink:
+            # Моргнул — зрачок на кадре пропал, такой замер только портит нейтраль.
             return
         self._calib_samples.append((gaze_x, gaze_y))
         if len(self._calib_samples) < self.CALIB_FRAMES:
             return
         xs = [sample[0] for sample in self._calib_samples]
         ys = [sample[1] for sample in self._calib_samples]
-        CFG.gaze_neutral_x = sum(xs) / len(xs)
-        CFG.gaze_neutral_y = sum(ys) / len(ys)
+        CFG.gaze_neutral_x = self._robust_center(xs)
+        CFG.gaze_neutral_y = self._robust_center(ys)
         self._calib_samples = None
+        CFG.save()
 
     def _threshold(self, key: str, value: float, threshold: float) -> bool:
         """Порог с гистерезисом: включается выше threshold, гаснет ниже
@@ -164,6 +258,59 @@ class CameraTracker:
             return results.multi_face_landmarks[0]
         return None
 
+    HAND_PALM = (0, 5, 9, 13, 17)   # запястье + основания пальцев = центр ладони
+    HAND_TIPS = (8, 12, 16, 20)     # кончики пальцев
+
+    def _detect_hand(self, frame):
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(frame_rgb)
+        if results.multi_hand_landmarks:
+            return results.multi_hand_landmarks[0]
+        return None
+
+    def _update_hand(self, hand_lm) -> None:
+        if hand_lm is None:
+            self.state["hand_present"] = False
+            self.state["fist"] = False
+            return
+        lm = hand_lm.landmark
+        cx = sum(lm[i].x for i in self.HAND_PALM) / len(self.HAND_PALM)
+        cy = sum(lm[i].y for i in self.HAND_PALM) / len(self.HAND_PALM)
+
+        # Раскрытие ладони: как далеко кончики пальцев от центра ладони,
+        # в единицах размера кисти. Открытая ладонь — далеко, кулак — близко.
+        d = sum(math.hypot(lm[i].x - cx, lm[i].y - cy) for i in self.HAND_TIPS) \
+            / len(self.HAND_TIPS)
+        scale = math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y) + 1e-6
+        openness = d / scale
+
+        # Гистерезис кулака: не дёргается на границе порога.
+        if self._fist_held:
+            if openness > CFG.fist_release:
+                self._fist_held = False
+        elif openness < CFG.fist_threshold:
+            self._fist_held = True
+
+        now = time.time()
+        hx = self.hand_flt_x.update(cx, now)
+        hy = self.hand_flt_y.update(cy, now)
+        self.state["hand_present"] = True
+        self.state["hand_x"] = hx
+        self.state["hand_y"] = hy
+        self.state["fist"] = self._fist_held
+
+    def _aim_from_hand(self):
+        """Рука двигает прицел напрямую: положение ладони -> доля поля.
+
+        По X зеркалим: в сыром кадре правая рука едет влево по изображению,
+        а игрок ждёт «рука вправо = прицел вправо».
+        """
+        hx = 1.0 - self.state["hand_x"]
+        hy = self.state["hand_y"]
+        ax = clamp01(FIELD_CENTER + (hx - FIELD_CENTER) * CFG.hand_gain)
+        ay = clamp01(FIELD_CENTER + (hy - FIELD_CENTER) * CFG.hand_gain)
+        return ax, ay
+
     def _open_capture(self) -> None:
         """Открыть камеру: сначала DSHOW, потом бэкенд по умолчанию."""
         self.cap = cv2.VideoCapture(CFG.camera_index, cv2.CAP_DSHOW)
@@ -177,6 +324,11 @@ class CameraTracker:
             # После перезапуска камеры стрельба начинается с чистого состояния.
             self._prev_smile = False
             self._prev_mouth_open = False
+            self._prev_fist = False
+            self._fist_held = False
+            self._prev_blink = False
+            self._charge = 0.0
+            self._blink_history = []
             self._held = {"smile": False, "mouth_open": False}
             self._open_capture()
             if not self.cap.isOpened():
@@ -197,6 +349,7 @@ class CameraTracker:
             self.frame = None
             self.state["camera"] = False
             self.state["face"] = False
+            self.state["hand_present"] = False
             self.state["camera_open"] = False
 
     def _loop(self):
@@ -244,9 +397,34 @@ class CameraTracker:
                     self.state["error"] = f"{type(exc).__name__}: {exc}"
 
     def _process_frame(self, frame):
+        hand_lm = self._detect_hand(frame)
+        self._update_hand(hand_lm)
+
         mesh = self._make_mesh(frame)
         self.state["face"] = bool(mesh)
+
+        now = time.time()
+
+        # Обычный выстрел — смыкание руки в кулак.
+        shots = 0
+        fist_now = self.state["hand_present"] and self.state["fist"]
+        if fist_now and not self._prev_fist:
+            shots = 1
+        self._prev_fist = fist_now
+
         if not mesh:
+            # Лица нет: заряжать супер нечем, но рукой целиться и стрелять можно.
+            if self.state["hand_present"]:
+                ax, ay = self._aim_from_hand()
+            else:
+                ax, ay = self.state["aim_x"], self.state["aim_y"]
+            self.state.update({
+                "camera": True,
+                "aim_x": ax,
+                "aim_y": ay,
+                "charging": False,
+                "shot_id": self.state["shot_id"] + shots,
+            })
             return
 
         lm = mesh.landmark
@@ -258,34 +436,59 @@ class CameraTracker:
         gaze_rx, gaze_ry, eye_rw = eye_gaze(lm[RIGHT_IRIS_CENTER].x, lm[RIGHT_IRIS_CENTER].y,
                                             lm[RIGHT_EYE_OUTER].x, lm[RIGHT_EYE_INNER].x,
                                             lm[RIGHT_EYE_TOP].y, lm[RIGHT_EYE_BOTTOM].y)
-        gaze_x = self.iris_ema_x.update((gaze_lx + gaze_rx) / 2.0)
-        gaze_y = self.iris_ema_y.update((gaze_ly + gaze_ry) / 2.0)
+        raw_gx = (gaze_lx + gaze_rx) / 2.0
+        raw_gy = (gaze_ly + gaze_ry) / 2.0
+        gaze_x = self.gaze_flt_x.update(raw_gx, time.time())
+        gaze_y = self.gaze_flt_y.update(raw_gy, time.time())
         eye_w = (eye_lw + eye_rw) / 2.0     # масштаб лица для метрик рта
 
-        # Улыбка — это рот, растянутый в ширину (губы можно сжать, рот
-        # открывать не надо), поэтому меряем ширину рта, а не подъём углов.
+        # Моргание: раскрытие глаза (высота/ширина) ниже порога = глаз закрыт.
+        left_open = abs(lm[LEFT_EYE_TOP].y - lm[LEFT_EYE_BOTTOM].y)
+        right_open = abs(lm[RIGHT_EYE_TOP].y - lm[RIGHT_EYE_BOTTOM].y)
+        eye_open = (left_open + right_open) / 2.0
+        blink = (eye_open / eye_w) < self.BLINK_RATIO
+
+        # Зарядка супера движением глаз.
+        dt = now - self._prev_charge_time
+        self._prev_charge_time = now
+        if dt < 0:
+            dt = 0.0
+        move = math.hypot(gaze_x - CFG.gaze_neutral_x, gaze_y - CFG.gaze_neutral_y)
+        charging = (not blink) and (move > CFG.super_charge_move_min)
+        if charging:
+            self._charge = min(1.0, self._charge + move * dt * CFG.super_charge_rate)
+        super_ready = self._charge >= 1.0
+
+        # Считаем моргания: закрылся -> открылся = одно моргание.
+        if not blink and self._prev_blink:
+            self._blink_history.append(now)
+            self._blink_history = [t for t in self._blink_history
+                                   if now - t <= CFG.super_blink_window]
+        self._prev_blink = blink
+        blink_count = len(self._blink_history)
+
+        # Супер-выстрел: заряд полон + нужное число морганий подряд.
+        super_shot = 0
+        if super_ready and blink_count >= CFG.super_blink_count:
+            super_shot = 1
+            self._charge = 0.0
+            self._blink_history = []
+            blink_count = 0
+            super_ready = False
+
+        # Улыбка и открытый рот — только как диагностика (не стреляют).
         mouth_w = abs(lm[MOUTH_LEFT].x - lm[MOUTH_RIGHT].x)
         smile_score = self.smile_ema.update(mouth_w / eye_w)
-
-        # Широко открытый рот — просвет между внутренними губами.
         mouth_h = abs(lm[LIP_TOP_INNER].y - lm[LIP_BOTTOM_INNER].y)
         mouth_open_score = self.mouth_ema.update(mouth_h / eye_w)
 
-        smile = self._threshold("smile", smile_score, CFG.smile_threshold)
-        mouth_open = self._threshold("mouth_open", mouth_open_score,
-                                     CFG.mouth_open_threshold)
+        self._collect_calibration(raw_gx, raw_gy, blink)
 
-        # Выстрел по началу события: улыбка — один, открытый рот — двойной.
-        shots = 0
-        if smile and not self._prev_smile:
-            shots = 1
-        if mouth_open and not self._prev_mouth_open:
-            shots = 2
-        self._prev_smile = smile
-        self._prev_mouth_open = mouth_open
-
-        self._collect_calibration(gaze_x, gaze_y)
-        aim_x, aim_y = gaze_to_aim(gaze_x, gaze_y)
+        # Прицел — только рука.
+        if self.state["hand_present"]:
+            aim_x, aim_y = self._aim_from_hand()
+        else:
+            aim_x, aim_y = self.state["aim_x"], self.state["aim_y"]
 
         # Обновление состояния
         self.state.update({
@@ -300,10 +503,16 @@ class CameraTracker:
             "neutral_y": CFG.gaze_neutral_y,
             "smile_score": smile_score,
             "mouth_open_score": mouth_open_score,
-            "smile": smile,
-            "mouth_open": mouth_open,
+            "smile": False,
+            "mouth_open": False,
+            "fist": fist_now,
+            "super_charge": self._charge,
+            "super_ready": super_ready,
+            "blink_count": blink_count,
+            "charging": charging,
             "calibrating": self._calib_samples is not None,
             "shot_id": self.state["shot_id"] + shots,
+            "super_id": self.state["super_id"] + super_shot,
         })
 
     def get_frame(self):
@@ -312,7 +521,9 @@ class CameraTracker:
 
     def get_state(self):
         with self.lock:
-            return self.state
+            # Копия, а не ссылка: jsonify сериализует словарь уже без лока,
+            # а поток трекинга в это время может менять self.state.
+            return dict(self.state)
 
 # Инициализация трекера
 tracker = CameraTracker()
@@ -357,8 +568,9 @@ def state():
 @app.route('/config', methods=['GET', 'POST'])
 def config():
     if request.method == 'POST':
-        data = request.json
+        data = request.json or {}
         CFG.update(**data)
+        CFG.save()
         return jsonify(CFG.as_dict())
     return jsonify(CFG.as_dict())
 
@@ -373,7 +585,21 @@ def calibrate():
 def calibrate_reset():
     CFG.gaze_neutral_x = 0.0
     CFG.gaze_neutral_y = 0.0
+    CFG.save()
     return jsonify({"ok": True})
+
+# Сохранение рекорда: принимает счёт, запоминает лучший и пишет в config.json
+@app.route('/score', methods=['POST'])
+def score():
+    data = request.json or {}
+    try:
+        s = int(data.get("score", 0))
+    except (TypeError, ValueError):
+        s = 0
+    if s > CFG.best_score:
+        CFG.best_score = s
+        CFG.save()
+    return jsonify({"best_score": CFG.best_score})
 
 # Запуск камеры
 @app.route('/camera/start', methods=['POST'])

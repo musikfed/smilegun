@@ -1,4 +1,4 @@
-﻿.aider*
+.aider*
 .venv/
 __pycache__/
 *.pyc
@@ -6,3 +6,4 @@ __pycache__/
 __pycache__.7z
 *.log
 .env
+config.json

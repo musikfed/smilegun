@@ -7,13 +7,14 @@ $env:PYTHONUNBUFFERED = '1'
 
 if (-not (Test-Path '.venv')) {
     uv venv --python 3.12
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 uv pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-if ((-not (Test-Path 'static\blaster.mp3')) -or (-not (Test-Path 'static\charge.mp3')) -or (-not (Test-Path 'static\super.mp3'))) {
-    uv run python generate_sound.py
-}
+uv run python generate_sound.py --ensure
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host ''
 Write-Host 'SmileGun: http://127.0.0.1:5000' -ForegroundColor Green

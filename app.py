@@ -6,6 +6,9 @@ import cv2
 import mediapipe as mp
 from flask import Flask, Response, request, jsonify, render_template
 from config import CFG
+
+# Создание глобального экземпляра конфига
+CFG = CFG
 from diagnostics import suppress_noise
 
 # Константы для landmarks
@@ -90,9 +93,6 @@ def eye_gaze(iris_x: float, iris_y: float, outer_x: float, inner_x: float,
     человек двигает головой, глаз и зрачок едут по кадру вместе, и отношение
     (зрачок - центр глаза) / ширина глаза не меняется — остаётся только
     поворот зрачка. Именно поэтому кубик слушается только глаз.
-
-    Третий элемент результата — ширина глаза: по ней нормируются метрики рта,
-    чтобы улыбка не зависела от того, близко или далеко лицо от камеры.
     """
     eye_w = max(abs(outer_x - inner_x), MIN_EYE_WIDTH)
     eye_h = max(abs(top_y - bottom_y), MIN_EYE_WIDTH)
@@ -110,7 +110,7 @@ def apply_deadzone(value: float, deadzone: float) -> float:
     return sign * (abs(value) - deadzone) / (1.0 - deadzone)
 
 def gaze_to_aim(gaze_x: float, gaze_y: float) -> tuple[float, float]:
-    """Прицел только по зрачкам: смещение взгляда от откалиброванной нейтрали.
+    """Прицел только по зрачкам: смещение взгляда откалиброванной нейтрали.
 
     CFG.gaze_neutral_x/y запоминает кнопка «Калибровка», когда человек смотрит
     в центр поля. Поэтому прицел не зависит ни от посадки, ни от размера лица,
@@ -162,6 +162,12 @@ class CameraTracker:
             "camera_open": False,
             "error": None,
         }
+        # Level tracking
+        self.level_start_time = None
+        self.level_duration = CFG.get('level_duration', 60)
+        self.level_active = False
+        self.current_score = 0
+        self.time_remaining = self.level_duration
         self._calib_samples = None
         self._prev_smile = False
         self._prev_mouth_open = False
@@ -451,8 +457,6 @@ class CameraTracker:
         # Зарядка супера движением глаз.
         dt = now - self._prev_charge_time
         self._prev_charge_time = now
-        if dt < 0:
-            dt = 0.0
         move = math.hypot(gaze_x - CFG.gaze_neutral_x, gaze_y - CFG.gaze_neutral_y)
         charging = (not blink) and (move > CFG.super_charge_move_min)
         if charging:
@@ -514,16 +518,41 @@ class CameraTracker:
             "shot_id": self.state["shot_id"] + shots,
             "super_id": self.state["super_id"] + super_shot,
         })
+        
+        # Обновляем уровень
+        self.update_level()
 
-    def get_frame(self):
-        with self.lock:
-            return self.frame
+    def update_level(self):
+        """Обновить состояние уровня"""
+        if not self.level_active:
+            return
+            
+        current_time = time.time()
+        elapsed = current_time - self.level_start_time if self.level_start_time else 0
+        self.time_remaining = max(0, self.level_duration - elapsed)
+        
+        # Обновляем state для фронтенда
+        self.state["time_remaining"] = self.time_remaining
+        self.state["level_active"] = self.level_active
+        self.state["current_score"] = self.current_score
 
     def get_state(self):
         with self.lock:
             # Копия, а не ссылка: jsonify сериализует словарь уже без лока,
             # а поток трекинга в это время может менять self.state.
-            return dict(self.state)
+            state = dict(self.state)
+            # Добавляем данные уровня
+            state["time_remaining"] = self.time_remaining
+            state["level_active"] = self.level_active
+            state["current_score"] = self.current_score
+            return state
+    
+    def start_level(self):
+        """Запустить новый уровень"""
+        self.level_start_time = time.time()
+        self.level_active = True
+        self.time_remaining = self.level_duration
+        self.current_score = 0
 
 # Инициализация трекера
 tracker = CameraTracker()
@@ -570,9 +599,8 @@ def config():
     if request.method == 'POST':
         data = request.json or {}
         CFG.update(**data)
-        CFG.save()
-        return jsonify(CFG.as_dict())
-    return jsonify(CFG.as_dict())
+        return jsonify(CFG.get_all())
+    return jsonify(CFG.get_all())
 
 # Калибровка взгляда: запомнить текущее положение зрачков как нейтраль
 @app.route('/calibrate', methods=['POST'])

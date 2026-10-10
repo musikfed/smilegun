@@ -1,5 +1,38 @@
 # SmileGun v2.1.1
 
+## English overview
+
+**SmileGun v2.1.1** is a browser-camera motion game that turns webcam input into game controls.
+
+The browser opens the camera with `getUserMedia()`; Python receives reduced frames and uses MediaPipe for vision analysis. This avoids direct DSHOW/MSMF webcam capture in Python and makes the architecture easier to adapt to mobile browsers and remote HTTPS deployment.
+
+### Controls
+
+- **Hand movement** → aim.
+- **Fist** → independent single shot.
+- **Say “PIU” / “ПИУ”** → independent single shot with a red shot indicator.
+- **Open mouth wide** → independent triple blue shot.
+- **Blink** or say **“PYM” / “ПЫМ”** → charge power.
+- **100% charge + smile** → super attack.
+- The charging square grows, shakes, and defines the shot area.
+
+### Stack
+
+Python 3.12 · Flask · MediaPipe · OpenCV · JavaScript · Browser `getUserMedia()`
+
+## Author
+
+Built by **musikfed**.
+
+- Email: [feudor.lab@yandex.ru](mailto:feudor.lab@yandex.ru)
+- Resume / CV #1: [hh.ru profile](https://hh.ru/resume/71c38b43ff112c93240039ed1f4b534d61334d?hhtmFrom=profile)
+- Resume / CV #2: [hh.ru profile](https://hh.ru/resume/b0aff0d0ff112d7b210039ed1f536a71536552?hhtmFrom=profile)
+- GitHub: [github.com/musikfed](https://github.com/musikfed)
+
+Areas of interest: **AI-assisted development, automation, multimodal interfaces, computer vision, developer tooling, backend/infrastructure, and system integration**.
+
+---
+
 Вторая итерация browser-camera архитектуры. Камеру открывает браузер через `getUserMedia()`, а Python получает только уменьшенные JPEG-кадры и анализирует их MediaPipe. Поэтому Python не требует прямого доступа к webcam через DSHOW/MSMF.
 
 ## Что изменено в v2.1.1

@@ -1,5 +1,36 @@
 # SmileGun
 
+## English overview
+
+**SmileGun** is an experimental browser game controlled by computer vision and voice-like actions. It explores an alternative game input model where a webcam becomes the controller: hand motion aims, gestures trigger shots, facial actions build power, and the browser UI reacts in real time.
+
+The project is also a practical playground for **human-computer interaction, MediaPipe/OpenCV vision pipelines, low-latency browser ↔ Python communication, generated sound effects, and multimodal controls**.
+
+### Highlights
+
+- hand tracking for aiming;
+- gesture-based shooting;
+- blink / face actions for charging power;
+- configurable levels and difficulty;
+- locally generated game sounds;
+- Python 3.12 + Flask + MediaPipe + OpenCV;
+- designed to run on ordinary consumer hardware.
+
+> Current development is moving toward a browser-camera architecture so the webcam is opened by the browser and Python only receives frames for analysis. See the `versions/v2.1-browser-square` branch for the newer experimental line.
+
+## Author
+
+Built by **musikfed** as an independent experimental project.
+
+- Email: [feudor.lab@yandex.ru](mailto:feudor.lab@yandex.ru)
+- Resume / CV #1: [hh.ru profile](https://hh.ru/resume/71c38b43ff112c93240039ed1f4b534d61334d?hhtmFrom=profile)
+- Resume / CV #2: [hh.ru profile](https://hh.ru/resume/b0aff0d0ff112d7b210039ed1f536a71536552?hhtmFrom=profile)
+- GitHub: [github.com/musikfed](https://github.com/musikfed)
+
+I am interested in **AI-assisted software development, automation, developer tools, computer vision, system integration, backend/infrastructure, and unconventional human-computer interfaces**.
+
+---
+
 Небольшая веб-игра на Python: веб-камера отслеживает руку (прицел и выстрел кулаком) и моргания глаз (зарядка супер-силы).
 
 ## Требования

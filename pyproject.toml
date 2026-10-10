@@ -1,0 +1,20 @@
+[project]
+name = "smilegun"
+version = "2.1.1"
+description = "SmileGun v2.1.1 — browser camera + local MediaPipe arcade"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "Flask>=3.1,<4",
+    "numpy>=1.26,<2",
+    "opencv-contrib-python==4.11.0.86",
+    "mediapipe==0.10.21",
+    "protobuf>=4.25.3,<5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+]
+
+[tool.uv]
+package = false

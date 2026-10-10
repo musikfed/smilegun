@@ -1,9 +1,7 @@
-.aider*
 .venv/
 __pycache__/
+.pytest_cache/
 *.pyc
-.acl-reports/
-__pycache__.7z
-*.log
-.env
 config.json
+.DS_Store
+static/sounds/*.wav

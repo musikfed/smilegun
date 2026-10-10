@@ -1,128 +1,132 @@
-# smilegun/config.py
 from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, asdict, fields
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
-# Настройки и рекорд хранятся здесь и переживают перезапуск сервера.
-CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
+CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 
 
 @dataclass
 class Config:
-    # Поле
-    field_width: int = 900
-    field_height: int = 950
+    # Browser capture / analysis. Camera itself is never opened by Python.
+    camera_width: int = 640
+    camera_height: int = 480
+    analysis_width: int = 416
+    analysis_fps: int = 15
+    jpeg_quality: float = 0.68
 
-    # Старые параметры усиления взгляда сохранены для совместимости.
-    # Прицел управляется рукой; взгляд отображается только в диагностике.
-    iris_gain: float = 2.6
-    iris_gain_y: float = 1.6
-    smoothing_alpha: float = 0.30   # EMA (0..1, меньше = плавнее)
-
-    # Нейтраль взгляда: кнопка «Калибровка» запоминает диагностический центр.
-    gaze_neutral_x: float = 0.0
-    gaze_neutral_y: float = 0.0
-
-    # Старый параметр мёртвой зоны взгляда, сохранён для совместимости.
-    gaze_deadzone: float = 0.02
-
-    # Старые пороги лица; улыбка и раскрытие рта доступны как диагностика.
+    # Vision controls.
+    hand_gain: float = 1.25
+    hand_smoothing: float = 0.42
     smile_threshold: float = 1.55
-    smile_hysteresis: float = 0.65  # отпускание: ниже threshold * 0.65
+    blink_threshold: float = 0.15  # legacy/fallback tuning retained for config compatibility
+    blink_release: float = 0.19
+    blink_close_ratio: float = 0.58
+    blink_release_ratio: float = 0.78
+    blink_cooldown: float = 0.22
+    fist_max_extended: int = 1
+    fist_release_extended: int = 3
 
-    # mouth_open_score — просвет между внутренними губами / ширина глаза.
-    mouth_open_threshold: float = 0.30
+    # Deliberate wide-mouth gesture -> independent triple shot.  Hysteresis and
+    # a short hold avoid accidental triggering while merely speaking.
+    mouth_open_threshold: float = 0.38
+    mouth_release_threshold: float = 0.22
+    mouth_hold_frames: int = 2
+    mouth_cooldown: float = 0.65
 
-    # Игра
-    bullet_speed: float = 9.0       # пикс/кадр
-    level_duration: int = 60       # секунд на уровень, 10..600
-    level_difficulty: int = 1      # сложность: 1..5
+    # Charge / super.
+    blink_charge_step: float = 0.25
+    voice_charge_step: float = 0.25
+    super_decay_delay: float = 4.0
+    super_decay_rate: float = 0.0
 
-    # Камера
-    camera_index: int = 0
-
-    # Управление рукой (MediaPipe Hands): рука двигает прицел и стреляет кулаком.
-    hand_gain: float = 1.2          # усиление движения ладони вокруг центра
-    fist_threshold: float = 1.0     # раскрытие ладони ниже этого = кулак
-    fist_release: float = 1.25      # выше этого кулак «отпускается» (гистерезис)
-
-    # Супер-сила: энергия моргания складывается, после паузы заряд затухает.
-    super_blink_gain: float = 0.25     # доля полного заряда на одно моргание
-    super_decay_delay: float = 3.0     # пауза перед затуханием, секунд
-    super_decay_rate: float = 0.08     # сколько заряда теряется за секунду
-    # Сохранены для совместимости старых настроек; заряд от движения глаз отключён.
-    super_blink_count: int = 4
-    super_charge_rate: float = 0.6
-    super_charge_move_min: float = 0.03
-    super_blink_window: float = 2.0
-
-    # Рекорд (лучший счёт), сохраняется в config.json.
+    # Game.
+    level_duration: int = 75
+    level_difficulty: int = 1
+    target_radius: int = 34
     best_score: int = 0
 
-    def update(self, **kwargs):
-        types = {item.name: type(item.default) for item in fields(self)}
-        for k, v in kwargs.items():
-            if k not in types or isinstance(v, bool):
-                continue
-            try:
-                converted = types[k](v)
-                if not math.isfinite(converted):
-                    continue
-                if types[k] is int and float(v) != converted:
-                    continue
-                if k == "level_duration" and not 10 <= converted <= 600:
-                    continue
-                if k == "level_difficulty" and not 1 <= converted <= 5:
-                    continue
-                if k == "super_blink_count" and not 2 <= converted <= 8:
-                    continue
-                if k == "super_blink_gain" and not 0.05 <= converted <= 1.0:
-                    continue
-                if k == "super_decay_delay" and not 0.5 <= converted <= 15.0:
-                    continue
-                if k == "super_decay_rate" and not 0.0 <= converted <= 0.5:
-                    continue
-                setattr(self, k, converted)
-            except (TypeError, ValueError, OverflowError):
-                # Невалидное значение (строка вместо числа и т.п.) пропускаем,
-                # чтобы один кривой запрос не ронял /config.
-                continue
+    def as_dict(self) -> dict:
         return asdict(self)
 
-    def as_dict(self):
-        return asdict(self)
+    def load(self) -> None:
+        if not CONFIG_PATH.exists():
+            return
+        try:
+            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if isinstance(data, dict):
+            self.update(**data)
 
     def save(self) -> None:
-        """Записать конфиг на диск. Ошибки не фатальны: игра работает и без файла."""
         try:
-            CONFIG_FILE.write_text(
-                json.dumps(self.as_dict(), indent=2, ensure_ascii=False),
+            CONFIG_PATH.write_text(
+                json.dumps(self.as_dict(), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         except OSError:
             pass
 
-    def load(self) -> None:
-        """Поднять сохранённый конфиг при старте (если файл есть и валиден)."""
-        if not CONFIG_FILE.exists():
-            return
-        try:
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
-        if isinstance(data, dict):
-            # При первом запуске с новым зарядом сохраняем привычную силу моргания.
-            if "super_blink_gain" not in data and "super_blink_count" in data:
-                try:
-                    count = int(data["super_blink_count"])
-                    if not isinstance(data["super_blink_count"], bool) and 2 <= count <= 8 and float(data["super_blink_count"]) == count:
-                        data["super_blink_gain"] = 1.0 / count
-                except (TypeError, ValueError, OverflowError):
-                    pass
-            self.update(**data)
+    def update(self, **patch) -> dict:
+        known = {f.name: type(f.default) for f in fields(self)}
+        for key, raw in patch.items():
+            typ = known.get(key)
+            if typ is None or isinstance(raw, bool):
+                continue
+            try:
+                value = typ(raw)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if isinstance(value, float) and not math.isfinite(value):
+                continue
+            if key == "analysis_fps" and not 5 <= value <= 30:
+                continue
+            if key == "analysis_width" and not 240 <= value <= 640:
+                continue
+            if key == "jpeg_quality" and not 0.35 <= value <= 0.95:
+                continue
+            if key == "hand_gain" and not 0.5 <= value <= 2.5:
+                continue
+            if key == "hand_smoothing" and not 0.05 <= value <= 1.0:
+                continue
+            if key == "smile_threshold" and not 1.1 <= value <= 2.4:
+                continue
+            if key == "blink_threshold" and not 0.08 <= value <= 0.35:
+                continue
+            if key == "blink_release" and not 0.10 <= value <= 0.45:
+                continue
+            if key == "blink_close_ratio" and not 0.35 <= value <= 0.80:
+                continue
+            if key == "blink_release_ratio" and not 0.55 <= value <= 0.98:
+                continue
+            if key == "blink_cooldown" and not 0.10 <= value <= 1.0:
+                continue
+            if key == "mouth_open_threshold" and not 0.18 <= value <= 0.80:
+                continue
+            if key == "mouth_release_threshold" and not 0.08 <= value <= 0.60:
+                continue
+            if key == "mouth_hold_frames" and not 1 <= value <= 8:
+                continue
+            if key == "mouth_cooldown" and not 0.20 <= value <= 2.0:
+                continue
+            if key in {"blink_charge_step", "voice_charge_step"} and not 0.05 <= value <= 1.0:
+                continue
+            if key == "super_decay_delay" and not 0.5 <= value <= 15.0:
+                continue
+            if key == "super_decay_rate" and not 0.0 <= value <= 0.5:
+                continue
+            if key == "level_duration" and not 15 <= value <= 600:
+                continue
+            if key == "level_difficulty" and not 1 <= value <= 5:
+                continue
+            if key == "target_radius" and not 18 <= value <= 70:
+                continue
+            setattr(self, key, value)
+        self.save()
+        return self.as_dict()
 
 
 CFG = Config()

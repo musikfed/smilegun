@@ -163,3 +163,17 @@ node test_frontend.cjs
 - Из-за этого же после правок кода сервер нужно перезапускать руками: автоперезагрузки больше нет.
 
 - Telegram: [@Feudorlab1](https://t.me/Feudorlab1)
+
+## Languages / Языки
+
+[English](README_EN.md) · [Русский](README_RU.md) · [हिन्दी](README_HI.md) · [简体中文](README_ZH-CN.md) · [Қазақша](README_KK.md) · [Монгол](README_MN.md) · [Саха тыла](README_SAH.md) · [Беларуская](README_BE.md) · [한국어](README_KO.md)
+
+## Screenshots / Скриншоты
+
+![Existing project capture](квадрат%20уходит%20за%20рамку%2C%20масштаб%20страницы%20не%20подрасиваеться%20_%20сделат%20за%20головою%20надо%20%20за%20зрочками%20.png)
+
+![Menu documentation preview](docs/screenshots/menu-preview.svg)
+
+![Gameplay documentation preview](docs/screenshots/game-preview.svg)
+
+> SVG previews are generated documentation mockups, not live screenshots. / SVG-превью — сгенерированные макеты документации, а не снимки работающей игры.

@@ -183,4 +183,3 @@ node test_frontend.cjs
 
 [**Architecture and multilingual presentation**](docs/showcase/README.md)
 
-![smilegun architecture](docs/showcase/overview.svg)

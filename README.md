@@ -177,3 +177,10 @@ node test_frontend.cjs
 ![Gameplay documentation preview](docs/screenshots/game-preview.svg)
 
 > SVG previews are generated documentation mockups, not live screenshots. / SVG-превью — сгенерированные макеты документации, а не снимки работающей игры.
+
+
+## Visual project showcase · 11 languages
+
+[**Architecture and multilingual presentation**](docs/showcase/README.md)
+
+![smilegun architecture](docs/showcase/overview.svg)

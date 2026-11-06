@@ -43,7 +43,7 @@ Giochi di visione artificiale. **smilegun:** Webcam stream → Computer vision �
 
 ## Контакты / Contact
 
-Telegram: [@Feudorlab1](https://t.me/Feudorlab1) · Phone: [+7 926 041 1145](tel:+79260411145)
+Telegram: [@Feudorlab1](https://t.me/Feudorlab1)
 
 Email: [feudor.lab@yandex.ru](mailto:feudor.lab@yandex.ru), [obzorniky@gmail.com](mailto:obzorniky@gmail.com) · [peginelab.ru](https://peginelab.ru/)
 

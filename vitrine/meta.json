@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "id": "smilegun",
+  "title": "SmileGun",
+  "version": "—",
+  "description": "SmileGun is an experimental browser game controlled by computer vision and voice-like actions. It explores an alternative game input model where a webcam becomes the controller: hand motion aims, gestures trigger shots, facial actions build power, and the browser UI reacts in real time.",
+  "subtitle": null,
+  "tags": [
+    "Python"
+  ],
+  "visibility": "public",
+  "publication": "publish_on_merge",
+  "public_private_approved": false,
+  "display_mode": "diagram",
+  "status": "Черновик — ожидает проверки",
+  "repo_url": "https://github.com/musikfed/smilegun",
+  "screenshots": [],
+  "cover": "vitrine/generated/cover.svg",
+  "cover_type": "schematic-not-screenshot",
+  "screenshot_source": "not-available"
+}
